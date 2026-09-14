@@ -1,0 +1,23 @@
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+
+# Secrets / env vars — never commit these
+.env
+*.env
+secrets.json
+*.key
+*.pem
+
+# IDE / OS clutter
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
