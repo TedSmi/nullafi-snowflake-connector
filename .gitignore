@@ -1,6 +1,7 @@
 # Byte-compiled files
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # Virtual environments
 venv/
@@ -21,3 +22,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local POC output
+phase1_results.json

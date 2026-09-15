@@ -1,0 +1,56 @@
+[
+  {
+    "record_id": "cust_001",
+    "scan_fields": {
+      "email": "alex.test@example.com",
+      "ssn": "122-12-8348",
+      "credit_card": "4111111111111111",
+      "full_name": "Alex Example",
+      "notes": "Customer asked whether their invoice could be sent by email."
+    },
+    "expected_sensitive_fields": ["ssn"],
+    "field_notes": {
+      "email": "Common direct identifier; documents whether email rules are enabled.",
+      "ssn": "Known planted SSN pattern; verifies the dashboard rule from Phase 0.",
+      "credit_card": "Luhn-valid test card number; documents whether payment-card rules are enabled.",
+      "full_name": "Human name; documents whether name rules are enabled.",
+      "notes": "Mostly harmless free text; gives the API a negative/control-like field."
+    }
+  },
+  {
+    "record_id": "cust_002",
+    "scan_fields": {
+      "email": "billing@example.org",
+      "ssn": "078-05-1120",
+      "credit_card": "5555555555554444",
+      "full_name": "Jordan Sample",
+      "notes": null
+    },
+    "expected_sensitive_fields": ["ssn"],
+    "field_notes": {
+      "email": "Second email format; helps catch single-value assumptions if email rules are enabled.",
+      "ssn": "Another synthetic SSN-like value; confirms repeated detection.",
+      "credit_card": "Mastercard test number; checks another card prefix if card rules are enabled.",
+      "full_name": "Second synthetic name; checks repeated entity behavior if name rules are enabled.",
+      "notes": "Null value; verifies we skip nulls instead of calling Nullafi with them."
+    }
+  },
+  {
+    "record_id": "cust_003",
+    "scan_fields": {
+      "email": "",
+      "ssn": "not-an-ssn",
+      "credit_card": "not-a-card",
+      "full_name": "No Sensitive Match",
+      "notes": "Ordinary account note with no planted SSN or card."
+    },
+    "expected_sensitive_fields": [],
+    "field_notes": {
+      "email": "Empty string; verifies empty values do not break the client.",
+      "ssn": "Negative control; should not match an SSN rule.",
+      "credit_card": "Negative control; should not match a card rule.",
+      "full_name": "Ambiguous control value; documents whether name rules are enabled.",
+      "notes": "Free text negative control."
+    }
+  }
+]
