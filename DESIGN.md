@@ -125,3 +125,52 @@ Decision: a config table in Snowflake holding, at minimum:
     is configured.
   - Practical max-payload testing, for the same reason.
   - Snowflake connectivity, which starts in Phase 2.
+
+## Phase 2 Snowflake connectivity design
+- Snowflake object pattern:
+  - `NULLAFI_API_NETWORK_RULE`: schema-level egress rule using
+    `MODE = EGRESS`, `TYPE = HOST_PORT`, and `VALUE_LIST = ('openflow.nullafi.net')`.
+  - `NULLAFI_API_KEY`: schema-level `GENERIC_STRING` secret containing the bearer
+    token. The repository keeps only a placeholder value.
+  - `NULLAFI_EXTERNAL_ACCESS_INTEGRATION`: account-level integration that allows
+    only the Nullafi network rule and the Nullafi secret.
+  - `NULLAFI_PHASE2_CONNECTIVITY_TEST`: minimal Python stored procedure that uses
+    `EXTERNAL_ACCESS_INTEGRATIONS` plus a `SECRETS` alias to call `/scan`.
+- Stored procedure vs. UDF:
+  - Decision: use a stored procedure.
+  - Reason: later phases need operational side effects: reading batches, writing
+    output/error/run-log tables, and controlling retry behavior. A UDF is more
+    natural for pure row-level transformations, but this connector is a pipeline
+    component.
+- Public egress vs. private connectivity:
+  - Decision: Phase 2 uses public internet egress to `openflow.nullafi.net`.
+  - Tradeoff: public egress is simpler and adequate for the first connectivity
+    proof. Private connectivity may be preferable for production accounts with
+    stricter network posture, but it introduces cloud/provider-specific setup and
+    Snowflake edition constraints.
+- Inline procedure vs. staged Python file:
+  - Decision: keep the Phase 2 handler inline in SQL.
+  - Tradeoff: inline SQL is easier for a new user to run in a worksheet and avoids
+    stage packaging during the connectivity proof. Phase 3+ can move pipeline
+    logic into staged Python modules if the procedure grows enough to make inline
+    code hard to review.
+- Diagnostic return shape:
+  - The procedure returns a Snowflake `VARIANT` with `ok`, `status_code`,
+    request metadata, response body, and a `changed` boolean.
+  - It does not return request headers or the secret value.
+  - A successful 200 with `changed = false` still proves connectivity; it carries
+    forward the Phase 1 rule-attachment blocker.
+- Secret exposure handling:
+  - The source SQL intentionally contains only `<PASTE_NULLAFI_API_KEY_HERE>`.
+  - `SETUP.md` instructs the user to paste the key only in a private Snowflake
+    worksheet and to run a query-history search using a short key fragment.
+  - If query history exposes the real key, rotate the key and update the
+    Snowflake Secret immediately.
+- Phase 2 validation status:
+  - Repository artifacts and static tests are complete.
+  - Live validation remains account-dependent: run
+    `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` in Snowflake and record the result.
+  - Trial-account blocker observed: Snowflake returned
+    `External access is not supported for trial accounts` when creating the
+    external access path. This blocks a true Snowflake -> Nullafi live proof on
+    that account, but does not change the connector design.

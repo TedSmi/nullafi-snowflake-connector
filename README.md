@@ -3,7 +3,81 @@
 A Snowflake-native connector that routes data through Nullafi for sensitive-data
 detection and protection before it continues through a pipeline.
 
-**Status:** Phase 1 complete — local proof of concept ready for commit
+**Status:** Phase 2 implemented locally — live Snowflake validation blocked on trial-account external access
+
+## Phase 2: Snowflake Connectivity
+
+Phase 2 adds the Snowflake-side proof that a Python stored procedure can reach
+Nullafi through Snowflake external network access. The implementation lives in
+`snowflake/phase2_connectivity.sql` and the runbook lives in `SETUP.md`.
+
+Snowflake trial accounts may fail with:
+
+```text
+SQL compilation error: External access is not supported for trial accounts.
+```
+
+That is an account limitation, not a connector bug. The repo-side Phase 2
+artifacts can still be reviewed and tested locally, but the live Snowflake ->
+Nullafi proof requires external access to be enabled on the Snowflake account.
+
+### What Phase 2 Added
+
+- A Snowflake `NETWORK RULE` scoped to `openflow.nullafi.net`.
+- A Snowflake `GENERIC_STRING` secret for the Nullafi API key.
+- An `EXTERNAL ACCESS INTEGRATION` binding the network rule and secret.
+- A minimal Python stored procedure, `NULLAFI_PHASE2_CONNECTIVITY_TEST`, that
+  calls Nullafi's `/scan` endpoint with one synthetic value.
+- Static tests that verify the setup SQL keeps only a placeholder API key in the
+  repository.
+
+### Run In Snowflake
+
+Open `snowflake/phase2_connectivity.sql` in a private Snowflake worksheet,
+choose your role/warehouse/database/schema, replace the API-key placeholder in
+the worksheet only, and run the script.
+
+The smoke test is:
+
+```sql
+CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();
+```
+
+Expected success shape:
+
+```json
+{
+  "ok": true,
+  "status_code": 200,
+  "changed": true
+}
+```
+
+`changed` may be `false` until a dashboard rule is attached to the
+namespace/application; a 200 response is the Phase 2 connectivity proof.
+
+See `SETUP.md` for privilege notes, troubleshooting, and the query-history check
+for secret exposure.
+
+## Phase 2.5: Get Account And Verify Phase 2
+
+The current Snowflake trial account cannot complete the live connectivity test
+because external network access is disabled for trial accounts. To finish the
+Snowflake proof later, use one of these paths:
+
+- Ask Snowflake to enable external network access on the trial account.
+- Convert the trial to a non-trial account.
+- Use another Snowflake account where external network access is already enabled.
+
+Once an account supports external access, rerun `snowflake/phase2_connectivity.sql`
+from `SETUP.md`. Phase 2.5 is complete when:
+
+- `NULLAFI_API_NETWORK_RULE`, `NULLAFI_API_KEY`, and
+  `NULLAFI_EXTERNAL_ACCESS_INTEGRATION` are created successfully.
+- `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` returns HTTP `200`.
+- Query history does not expose the Nullafi API key in plaintext, or the key is
+  rotated immediately if exposure is found.
+- `PLAN.md` is updated to mark the live Snowflake validation items complete.
 
 ## Phase 1: Local POC
 
