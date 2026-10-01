@@ -109,7 +109,7 @@ def run(session, nullafi_namespace, test_value, nullafi_base_url, nullafi_scan_p
         "response_body": body,
         "changed": returned_value != test_value if returned_value is not None else None,
         "note": (
-            "A 200 response proves Snowflake egress, secret access, and Nullafi auth. "
+            "A 2xx response proves Snowflake egress, secret access, and Nullafi auth. "
             "changed=false can still be expected until the Nullafi dashboard rule is attached."
         ),
     }

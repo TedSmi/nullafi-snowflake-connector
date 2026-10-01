@@ -5,11 +5,18 @@ Snowflake-managed external network access and a Snowflake Secret.
 
 ## Prerequisites
 
-- A Snowflake role that can create network rules in the target schema.
-- A Snowflake role that can create external access integrations at the account
-  level, commonly `ACCOUNTADMIN`.
-- A Snowflake role that can create secrets and Python stored procedures in the
-  target schema.
+- A Snowflake account with external network access enabled. It is disabled by
+  default for trial accounts; ask Snowflake to enable it or use a paid account.
+- A Snowflake role with `USAGE` on the target database and schema, plus
+  `CREATE NETWORK RULE`, `CREATE SECRET`, and `CREATE PROCEDURE` on the target
+  schema.
+- To create the external access integration: the account-level `CREATE
+  INTEGRATION` privilege, plus `USAGE` on `NULLAFI_API_KEY` and on the schema
+  that contains it. `ACCOUNTADMIN` normally has these privileges.
+- To create the procedure: `READ` on `NULLAFI_API_KEY`, `USAGE` on the schema
+  that contains it, and `USAGE` on `NULLAFI_EXTERNAL_ACCESS_INTEGRATION`.
+  These grants matter when the setup is split between an account administrator
+  and a developer role.
 - A warehouse available to compile and run the stored procedure.
 - Snowflake Python package support enabled for `requests` and
   `snowflake-snowpark-python`.
@@ -41,9 +48,10 @@ The final statement calls:
 CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();
 ```
 
-A successful result has `"ok": true` and `"status_code": 200`. If `"changed"` is
-`false`, that can still match the Phase 1 finding: Nullafi accepted and scanned
-the request, but no dashboard rule is attached to obfuscate the value yet.
+A successful result has `"ok": true` and a `"status_code"` in the HTTP 2xx range
+(for example, `200`). If `"changed"` is `false`, that can still match the Phase
+1 finding: Nullafi accepted and scanned the request, but no dashboard rule is
+attached to obfuscate the value yet.
 
 If your Nullafi namespace or endpoint differs from the defaults, call the
 procedure with explicit arguments:

@@ -33,3 +33,10 @@ def test_phase2_procedure_uses_secret_alias_not_literal_key() -> None:
     assert "SECRETS = ('nullafi_api_key' = NULLAFI_API_KEY)" in sql
     assert '_snowflake.get_generic_secret_string("nullafi_api_key")' in sql
     assert '"Authorization": "Bearer " + api_key' in sql
+
+
+def test_phase2_procedure_treats_all_2xx_responses_as_success() -> None:
+    sql = read_sql()
+
+    assert '"ok": 200 <= response.status_code < 300' in sql
+    assert '"A 2xx response proves Snowflake egress' in sql

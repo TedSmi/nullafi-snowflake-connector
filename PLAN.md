@@ -125,10 +125,10 @@ give it real time.
   External Access Integrations, Snowflake Secrets, and Python stored procedures
   (vs. UDFs — stored procs are the right fit here since you're doing I/O with
   side effects). Note the exact SQL DDL syntax for each.
-- [ ] **2.2 — Create a Network Rule** allowing egress to Nullafi's API domain.
+- [x] **2.2 — Create a Network Rule** allowing egress to Nullafi's API domain.
 - [ ] **2.3 — Create a Snowflake Secret** storing the Nullafi API key. Confirm it
   never appears in query history or logs in plaintext.
-- [ ] **2.4 — Create an External Access Integration** binding the network rule and
+- [x] **2.4 — Create an External Access Integration** binding the network rule and
   secret together.
 - [x] **2.5 — Write a minimal Python stored procedure** that calls Nullafi for a
   single hardcoded test value, just to prove the full chain works: Snowflake →
@@ -148,13 +148,15 @@ Notes on the checked Phase 2 items:
   `NULLAFI_PHASE2_CONNECTIVITY_TEST` in `snowflake/phase2_connectivity.sql`.
 - `2.7`: `SETUP.md` now documents privileges, exact SQL entry point, expected
   result shape, troubleshooting, and secret-exposure verification.
-- `2.2`–`2.4`/`2.6`: still require running the setup SQL in the target Snowflake
-  account. After `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` returns HTTP 200 and
-  the query-history check does not expose the key, these can be checked off.
-- Trial-account blocker: the current Snowflake trial returned
-  `External access is not supported for trial accounts`. Without Snowflake
-  enabling external access or converting to a non-trial account, the repository
-  can be Phase-2-ready but the live connectivity proof cannot be completed.
+- `2.2` and `2.4`: created successfully in the upgraded Snowflake account.
+- Live smoke test: `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` returned
+  `ok: true`, HTTP `200`, and the expected unchanged synthetic test value. This
+  proves Snowflake egress, secret retrieval, and Nullafi authentication.
+- `2.3` and `2.6`: remain open until the live key is rotated and the
+  query-history check confirms that it is not exposed. The procedure does not
+  return the key or request headers.
+- `changed: false` is expected until an active Nullafi obfuscation rule is
+  attached to the `dlp test` namespace.
 
 ---
 
@@ -165,18 +167,16 @@ Snowflake account that supports external network access. This phase exists
 because the initial Snowflake trial blocked external access before the connector
 could make an outbound call.
 
-- [ ] **2.5.1 — Get a Snowflake account with external access enabled.** Options:
-  ask Snowflake to enable external network access on the trial account, convert
-  the trial to a non-trial account, or use another Snowflake account where
-  external access is already enabled.
-- [ ] **2.5.2 — Rerun the Phase 2 setup SQL.** Use
+- [x] **2.5.1 — Get a Snowflake account with external access enabled.** The
+  trial account was upgraded.
+- [x] **2.5.2 — Rerun the Phase 2 setup SQL.** Used
   `snowflake/phase2_connectivity.sql` and the instructions in `SETUP.md`.
-- [ ] **2.5.3 — Confirm Snowflake object creation.** Verify the network rule,
+- [x] **2.5.3 — Confirm Snowflake object creation.** The network rule,
   secret, external access integration, and stored procedure all create without
   trial-account errors.
-- [ ] **2.5.4 — Run the live connectivity smoke test.** Execute
-  `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` and confirm the returned
-  `status_code` is `200`.
+- [x] **2.5.4 — Run the live connectivity smoke test.**
+  `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` returned HTTP `200` with
+  `ok: true`.
 - [ ] **2.5.5 — Verify secret handling.** Run the query-history check from
   `SETUP.md`. If the real Nullafi key appears in query text, rotate the key and
   update the Snowflake Secret.

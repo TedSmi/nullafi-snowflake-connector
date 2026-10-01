@@ -158,7 +158,7 @@ Decision: a config table in Snowflake holding, at minimum:
   - The procedure returns a Snowflake `VARIANT` with `ok`, `status_code`,
     request metadata, response body, and a `changed` boolean.
   - It does not return request headers or the secret value.
-  - A successful 200 with `changed = false` still proves connectivity; it carries
+  - A successful 2xx response with `changed = false` still proves connectivity; it carries
     forward the Phase 1 rule-attachment blocker.
 - Secret exposure handling:
   - The source SQL intentionally contains only `<PASTE_NULLAFI_API_KEY_HERE>`.
@@ -168,9 +168,10 @@ Decision: a config table in Snowflake holding, at minimum:
     Snowflake Secret immediately.
 - Phase 2 validation status:
   - Repository artifacts and static tests are complete.
-  - Live validation remains account-dependent: run
-    `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` in Snowflake and record the result.
-  - Trial-account blocker observed: Snowflake returned
-    `External access is not supported for trial accounts` when creating the
-    external access path. This blocks a true Snowflake -> Nullafi live proof on
-    that account, but does not change the connector design.
+  - Live validation succeeded in the upgraded Snowflake account. Calling
+    `NULLAFI_PHASE2_CONNECTIVITY_TEST()` returned `ok: true`, HTTP `200`, and
+    `{"phase2_test_value": "122-12-8348"}`.
+  - The unchanged returned value confirms the Phase 1 finding: connectivity and
+    authentication work, but no obfuscation rule is attached to `dlp test` yet.
+  - Before Phase 2 is closed, rotate the live API key used during setup, replace
+    the Snowflake Secret, and complete the query-history exposure check.
