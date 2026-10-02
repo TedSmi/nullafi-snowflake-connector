@@ -9,26 +9,27 @@
 - Endpoint chosen: `POST /scan` (not `/scan-dynamic`) — detection/obfuscation rules are
   configured server-side in the Nullafi dashboard (Applications + Rules), not passed
   per-request.
-  - Query params: `namespace` (required, matches a dashboard Application, e.g. "dlp test"),
+  - Query params: `namespace` (required, matches an Application's API-scanning
+    filter; the configured test value is `dlp test`),
     `username` (optional, activity tracking), `usergroup` (optional, activity tracking).
   - Request body: JSON object with the content to scan, e.g. `{"ssn": "122-12-8348"}`.
     CONFIRMED WORKING — returns HTTP 200.
 - Response format (confirmed): JSON object, same top-level key(s) as the request.
-  Phase 1 live curl confirmed that values may come back unchanged even when Nullafi
-  detects the SSN in dashboard activity. In the observed dashboard event, the app/origin
-  was `dlp test`, but `Rule` displayed `(None)`. Current interpretation: the API
-  request is valid and detection is happening, but no dashboard rule is attached to
-  obfuscate the value for this app/namespace yet.
+  An initial API call detected the SSN but returned it unchanged because the event
+  showed `Rule: (None)`. After adding the matching API-scanning application filter,
+  enabled obfuscation rule, and SSN obfuscation configuration, the Phase 2 test
+  returned `changed: true` for `122-12-8348`.
 - Error response format (confirmed): `{"code": <int>, "message": "<string>"}` — seen on
   401 and 403.
-- Rate limits: unknown — not in Swagger docs. Deferred until the dashboard obfuscation
-  rule is attached, so test results reflect the real production-like path.
-- Max payload size: unknown — deferred until the dashboard obfuscation rule is attached.
+- Rate limits: unknown — not in Swagger docs. Deferred until dedicated measurements
+  can be run against the now-working policy path.
+- Max payload size: unknown — deferred until dedicated measurements can be run against
+  the now-working policy path.
 - Batch support: local POC sends multiple top-level keys in one JSON object. Full live
   validation of multi-key obfuscation is deferred until an active rule is attached.
 - Reversibility ("store original value"): not a param on `/scan` (that's `/scan-dynamic`
-  only). For `/scan`, this must be set on the Rule/Obfuscation config in the dashboard —
-  confirm exact location before Phase 3. We want one-way (non-reversible) obfuscation.
+  only). For `/scan`, this is set on the Rule/Obfuscation config in the dashboard.
+  The connector uses one-way obfuscation.
 
 ## Input table schema
 - Columns to be scanned: TBD count/names — N configurable string columns, driven by the
@@ -60,17 +61,18 @@ Decision: a config table in Snowflake holding, at minimum:
   this table)
 
 ## Open items carried into Phase 1
-- Confirm obfuscation actually triggers with a value known to match the rule's regex.
-  Phase 1 narrowed this down: the dashboard detects the SSN, but currently shows
-  `Rule: (None)`, so obfuscation cannot be confirmed until a rule is attached.
-- Confirm the field name(s) used for matched/obfuscated content in the response.
-  Still open until an active rule changes the response.
+- Obfuscation confirmation is complete: the matching API-scanning application
+  filter plus active SSN rule changed the synthetic SSN in the Phase 2 smoke
+  test (`changed: true`).
+- The normalized response tracks the returned field value and `changed` state.
+  Dedicated entity-type metadata is still not exposed by the confirmed response
+  shape and remains unavailable to Phase 3.
 - Determine what "Data Scanning" right is called exactly in the key generation flow, so
   SETUP.md (Phase 2) can document it precisely for a new user.
 
 ## Phase 1 local POC notes
-- Phase 1 repository work is complete and ready to commit. The remaining obfuscation
-  confirmation depends on external Nullafi dashboard rule setup, not on local code.
+- Phase 1 repository work is complete and ready to commit. Policy-driven SSN
+  obfuscation was later confirmed through the Phase 2/3 Snowflake validation.
 - Local test data lives in `data/fake_sensitive_data.json`.
   - Each row contains `scan_fields`, `expected_sensitive_fields`, and `field_notes`.
   - `field_notes` documents why each fake field exists, since JSON does not support
@@ -95,12 +97,13 @@ Decision: a config table in Snowflake holding, at minimum:
   - `NULLAFI_BASE_URL=https://openflow.nullafi.net/api`
   - `NULLAFI_SCAN_PATH=/scan`
   - Full endpoint: `https://openflow.nullafi.net/api/scan?namespace=dlp%20test`
-- Live dashboard observation:
+- Live dashboard observations:
   - Nullafi activity is recorded for app/origin `dlp test`.
   - SSN detection appears in dashboard activity.
-  - `Rule` currently shows `(None)`.
-  - Because no rule is applied, the `/scan` response currently returns SSNs
-    unchanged.
+  - The initial event showed `Rule: (None)` and returned an unchanged value.
+  - Adding an API-scanning application filter for `dlp test`, attaching an
+    enabled SSN obfuscation rule, and rerunning the Phase 2 test returned
+    `changed: true`.
 - Current normalized response shape:
   - `record_id`
   - `field_results[]`
@@ -118,11 +121,12 @@ Decision: a config table in Snowflake holding, at minimum:
   - Added a local runner with structured logging and assertions.
   - Added unit tests that do not call the live API.
   - Confirmed the live API endpoint/auth/namespace path with curl.
-  - Identified dashboard rule setup as the blocker for obfuscation.
+  - Identified and resolved application/rule setup as the obfuscation blocker.
 - Deferred/skipped for now:
-  - Exact obfuscated response shape, because no active rule is currently applied.
-  - Practical rate-limit testing, because it should be measured after the rule path
-    is configured.
+  - Detailed entity-type metadata and any response fields beyond the confirmed
+    returned value/change state.
+  - Practical rate-limit testing, now that it can be measured against the active
+    rule path.
   - Practical max-payload testing, for the same reason.
   - Snowflake connectivity, which starts in Phase 2.
 
@@ -171,7 +175,68 @@ Decision: a config table in Snowflake holding, at minimum:
   - Live validation succeeded in the upgraded Snowflake account. Calling
     `NULLAFI_PHASE2_CONNECTIVITY_TEST()` returned `ok: true`, HTTP `200`, and
     `{"phase2_test_value": "122-12-8348"}`.
-  - The unchanged returned value confirms the Phase 1 finding: connectivity and
-    authentication work, but no obfuscation rule is attached to `dlp test` yet.
+  - After configuring the matching API-scanning filter and active SSN rule,
+    calling the procedure with `dlp test` returned `changed: true`. This confirms
+    connectivity, authentication, and policy-driven obfuscation.
   - Before Phase 2 is closed, rotate the live API key used during setup, replace
     the Snowflake Secret, and complete the query-history exposure check.
+
+## Phase 3 batch-pipeline design
+
+### Sample object model
+- `NULLAFI_PHASE3_SAMPLE_INPUT` is a synthetic, five-column source table.
+  `RECORD_ID` identifies a source row; `PROCESSING_STATUS` is `PENDING`,
+  `PROCESSED`, or `FAILED`. `LAST_PROCESSED_AT` and `LAST_ERROR_MESSAGE` make
+  its operational state inspectable.
+- `NULLAFI_PHASE3_SCAN_OUTPUT` holds one result for each
+  `(SOURCE_RECORD_ID, SCAN_COLUMN)`. It stores the returned/obfuscated value,
+  whether the returned value changed, a scan status, a timestamp, and the run
+  identifier. It does not duplicate the original field value: the source table
+  remains the authoritative location for plaintext. `RAW_API_RESPONSE` is
+  temporary debugging data and can itself include plaintext, so production
+  retention/access policy must be decided before it is enabled broadly.
+- `NULLAFI_PHASE3_ERROR_LOG` is the dead-letter table. It records error stage,
+  HTTP status, and service response but never request headers, API keys, or
+  request payload values.
+- `NULLAFI_PHASE3_RUN_LOG` contains per-invocation metrics: selected,
+  processed, failed, output-written, API-call, and API-failure counts.
+  `STARTED_AT`, `FINISHED_AT`, and `DURATION_MS` provide the basic duration
+  metric without relying on client-side clock time.
+
+### Batching and response mapping
+- The confirmed `/scan` shape is a JSON object with multiple top-level keys.
+  Phase 3 batches up to 20 field values per request. It gives each value an
+  opaque payload key (`v_1`, `v_2`, and so on), then maps the same returned key
+  back to its source record and source column. This avoids collisions when two
+  records both have an `SSN` field.
+- The procedure keeps all scannable fields from a source record in the same
+  HTTP batch. A batch failure can therefore mark only its participating source
+  records failed while later batches continue.
+- Actual Nullafi rate and max-payload limits are still unmeasured. Until dedicated
+  measurements are performed against the now-working obfuscation policy, the
+  implementation uses a conservative 20 values/request and rejects (rather
+  than silently truncating) fields over 1,000 characters.
+- The API response currently does not expose confirmed entity-type metadata.
+  `DETECTED_ENTITY_TYPES` is reserved and remains `NULL`. A changed returned
+  value gets `SUCCESS`; an unchanged successful value gets `NO_MATCH`. The
+  latter indicates no configured policy changed that value; it is not by itself
+  proof that no sensitive data exists.
+
+### Failure handling and reruns
+- An HTTP exception, non-2xx response, invalid JSON object, or missing returned
+  payload key produces error-log entries and marks only affected source rows
+  `FAILED`. It does not abort unrelated batches.
+- Output uses `MERGE` on `(SOURCE_RECORD_ID, SCAN_COLUMN)`, so retrying a row
+  updates prior per-field results instead of adding duplicates.
+- The default procedure reads `PENDING` rows only. This makes the ordinary
+  second run a no-op for successfully processed records. `RETRY_FAILED = TRUE`
+  explicitly opts into retrying failed rows.
+- A database/configuration failure outside the recoverable HTTP path closes the
+  run log as `FAILED` and is re-raised to the caller; this makes deployment
+  mistakes visible rather than silently treating them as data failures.
+
+### Scope boundary
+- Phase 3 uses fixed sample names and columns so it can be run and reviewed as
+  an isolated POC. It is not yet a drop-in production installer: phase 6 will
+  source table/column/namespace configuration from the planned Snowflake config
+  table and validate that configuration before execution.

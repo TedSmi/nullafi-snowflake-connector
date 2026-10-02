@@ -75,10 +75,10 @@ machine, before touching Snowflake at all.
 
 **Phase 1 closeout status:** local code, docs, and unit tests are complete. A
 live curl request confirmed the endpoint/auth/namespace path and showed activity
-in the Nullafi dashboard. The dashboard detected the SSN, but the event showed
-`Rule: (None)`, so true obfuscation is blocked by dashboard rule setup rather
-than by the local client code. The exact obfuscated response shape, rate limits,
-and max payload behavior are carried forward until an active rule is attached.
+in the Nullafi dashboard. The policy configuration was later corrected during
+Phase 3, and the Snowflake smoke test confirmed SSN obfuscation with
+`changed: true`. A local strict POC rerun, rate-limit measurement, and
+max-payload measurement remain optional follow-up validation.
 
 - [x] **1.1 — Create fake sensitive test data.** A small CSV/JSON with synthetic
   emails, SSNs, credit card numbers, names, etc. Comment on *why* each field was
@@ -105,9 +105,9 @@ and max payload behavior are carried forward until an active rule is attached.
 - [ ] **1.10 — Commit to GitHub.**
 
 Notes on the checked Phase 1 items:
-- `1.5`/`1.8`: the local assertion path exists and unit tests pass. The live
-  strict run is expected to fail until Nullafi dashboard rule setup changes
-  `Rule: (None)` to an active obfuscation rule.
+- `1.5`/`1.8`: the local assertion path exists and unit tests pass. The later
+  Phase 3 smoke test confirmed the active policy changes the synthetic SSN; the
+  local strict runner can now be rerun as an optional additional check.
 - `1.7`: rate-limit and max-payload results are documented as intentionally
   deferred because meaningful measurements should happen after the rule path is
   configured.
@@ -150,13 +150,14 @@ Notes on the checked Phase 2 items:
   result shape, troubleshooting, and secret-exposure verification.
 - `2.2` and `2.4`: created successfully in the upgraded Snowflake account.
 - Live smoke test: `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` returned
-  `ok: true`, HTTP `200`, and the expected unchanged synthetic test value. This
-  proves Snowflake egress, secret retrieval, and Nullafi authentication.
+  `ok: true`, HTTP `200`, and initially an unchanged synthetic test value. After
+  the matching API-scanning application filter and SSN rule were enabled, the
+  same smoke test returned `changed: true`.
 - `2.3` and `2.6`: remain open until the live key is rotated and the
   query-history check confirms that it is not exposed. The procedure does not
   return the key or request headers.
-- `changed: false` is expected until an active Nullafi obfuscation rule is
-  attached to the `dlp test` namespace.
+- `changed: true` now confirms the active Nullafi SSN obfuscation policy applies
+  to the `dlp test` API-scanning namespace.
 
 ---
 
@@ -176,13 +177,13 @@ could make an outbound call.
   trial-account errors.
 - [x] **2.5.4 — Run the live connectivity smoke test.**
   `CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();` returned HTTP `200` with
-  `ok: true`.
+  `ok: true`; after policy configuration, it also returned `changed: true`.
 - [ ] **2.5.5 — Verify secret handling.** Run the query-history check from
   `SETUP.md`. If the real Nullafi key appears in query text, rotate the key and
   update the Snowflake Secret.
-- [ ] **2.5.6 — Close out Phase 2 docs.** After live validation succeeds, mark
-  Phase 2 items `2.2`, `2.3`, `2.4`, and `2.6` complete, update the README
-  status, and record the observed result shape in `DESIGN.md`.
+- [ ] **2.5.6 — Close out Phase 2 docs.** The observed policy result and Phase 3
+  validation are now documented. Complete the secret-handling verification in
+  2.5.5 before marking the remaining Phase 2 security items complete.
 - [ ] **2.5.7 — Commit the validation update.**
 
 ---
@@ -192,33 +193,39 @@ could make an outbound call.
 Goal: the real pipeline logic, correctly handling errors and reruns — not just the
 happy path.
 
-- [ ] **3.1 — Create a sample input table** in Snowflake using your Phase 0.4
+- [x] **3.1 — Create a sample input table** in Snowflake using your Phase 0.4
   schema, loaded with the fake data from Phase 1.
-- [ ] **3.2 — Create the output table** per your Phase 0.4 design.
-- [ ] **3.3 — Write the core batch stored procedure:** read unprocessed rows from
+- [x] **3.2 — Create the output table** per your Phase 0.4 design.
+- [x] **3.3 — Write the core batch stored procedure:** read unprocessed rows from
   the input table.
-- [ ] **3.4 — Add batching/chunking logic** sized to respect the rate limits and
+- [x] **3.4 — Add batching/chunking logic** sized to respect the rate limits and
   payload limits you found in Phase 1.7 (don't call the API row-by-row if
   Nullafi supports batched requests).
-- [ ] **3.5 — Add per-row/per-batch error handling.** A single failed call
+- [x] **3.5 — Add per-row/per-batch error handling.** A single failed call
   shouldn't crash the whole batch — catch it, log it, and write it to a separate
   error/dead-letter table.
-- [ ] **3.6 — Add idempotency.** Use a status column (`PENDING` / `PROCESSED` /
+- [x] **3.6 — Add idempotency.** Use a status column (`PENDING` / `PROCESSED` /
   `FAILED`) or a `MERGE`-based write so re-running the procedure doesn't
   duplicate output rows.
-- [ ] **3.7 — Write results to the output table.**
-- [ ] **3.8 — Test — happy path:** run against the full fake dataset, verify row
+- [x] **3.7 — Write results to the output table.**
+- [x] **3.8 — Test — happy path:** run against the full fake dataset, verify row
   counts match, no duplicates, and detected entities look correct.
-- [ ] **3.9 — Test — failure path:** simulate an API failure (bad key, network
+- [x] **3.9 — Test — failure path:** simulate an API failure (bad key, network
   block, malformed row) and confirm it lands in the error table instead of
   crashing the run.
-- [ ] **3.10 — Test — rerun safety:** run the procedure twice in a row and
+- [x] **3.10 — Test — rerun safety:** run the procedure twice in a row and
   confirm the second run doesn't reprocess or duplicate anything.
-- [ ] **3.11 — Add basic run metrics** (rows processed, rows failed, duration) —
+- [x] **3.11 — Add basic run metrics** (rows processed, rows failed, duration) —
   a simple run-log table is enough at this stage.
-- [ ] **3.12 — Update `DESIGN.md`/README** with Phase 3 usage instructions and
+- [x] **3.12 — Update `DESIGN.md`/README** with Phase 3 usage instructions and
   any schema changes.
 - [ ] **3.13 — Commit to GitHub.**
+
+Phase 3 live validation is complete. The happy path processed the synthetic
+dataset, the malformed-endpoint test wrote recoverable failures to the
+dead-letter table, the normal rerun selected zero already-processed rows, and
+the configured Nullafi SSN policy returned `changed: true`. Commit remains as
+the final Phase 3 checklist item.
 
 ---
 

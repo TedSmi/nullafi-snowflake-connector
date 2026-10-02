@@ -49,9 +49,9 @@ CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();
 ```
 
 A successful result has `"ok": true` and a `"status_code"` in the HTTP 2xx range
-(for example, `200`). If `"changed"` is `false`, that can still match the Phase
-1 finding: Nullafi accepted and scanned the request, but no dashboard rule is
-attached to obfuscate the value yet.
+(for example, `200`). With an active matching obfuscation policy, the synthetic
+SSN test should also return `"changed": true`. A `false` value still proves
+connectivity, but indicates that the matching policy did not change the value.
 
 If your Nullafi namespace or endpoint differs from the defaults, call the
 procedure with explicit arguments:
@@ -93,6 +93,59 @@ Snowflake Secret immediately.
 - Secret authorization error: confirm `NULLAFI_API_KEY` is listed in
   `ALLOWED_AUTHENTICATION_SECRETS` and is also named in the procedure's
   `SECRETS` clause.
+
+## Phase 3 Sample Pipeline
+
+After the Phase 2 objects are present, run the complete
+`snowflake/phase3_batch_pipeline.sql` file in the same schema. It creates a
+synthetic input table, result table, dead-letter table, run-log table, and
+`NULLAFI_PROCESS_BATCH`.
+
+The script ends with a first procedure call plus inspection queries. A healthy
+run has all input rows in `PROCESSED`; it creates 15 output rows (three sample
+records times five scanned fields), including one `SKIPPED_NULL` result. With
+the configured SSN obfuscation policy, `cust_001` and `cust_002` should show
+`SUCCESS` and `VALUE_CHANGED = TRUE` for their SSN output rows. Control values
+that do not match a configured policy can still show `NO_MATCH`.
+
+Run these checks after the initial call:
+
+```sql
+SELECT PROCESSING_STATUS, COUNT(*) AS ROW_COUNT
+FROM NULLAFI_PHASE3_SAMPLE_INPUT
+GROUP BY PROCESSING_STATUS;
+
+SELECT SOURCE_RECORD_ID, SCAN_COLUMN, SCAN_STATUS, VALUE_CHANGED
+FROM NULLAFI_PHASE3_SCAN_OUTPUT
+ORDER BY SOURCE_RECORD_ID, SCAN_COLUMN;
+
+SELECT *
+FROM NULLAFI_PHASE3_ERROR_LOG
+ORDER BY OCCURRED_AT DESC;
+
+SELECT *
+FROM NULLAFI_PHASE3_RUN_LOG
+ORDER BY STARTED_AT DESC;
+```
+
+For rerun safety, call the procedure again with no arguments. It processes only
+`PENDING` rows, so the second run should select zero rows and output row count
+should remain 15. To retry only dead-lettered rows, opt in explicitly:
+
+```sql
+CALL NULLAFI_PROCESS_BATCH(100, TRUE);
+```
+
+The procedure currently caps individual values at 1,000 characters and batches
+at most 20 values in one Nullafi request. Those are conservative temporary
+limits, not documented Nullafi limits. An oversized value or failed request is
+recorded in `NULLAFI_PHASE3_ERROR_LOG`; the procedure continues processing
+unrelated batches.
+
+Use only the included synthetic data for this Phase 3 validation. The raw API
+response is retained in the output table for temporary debugging and may
+contain sensitive plaintext when real data is introduced; restrict access and
+define a retention policy before using this design beyond the POC.
 
 ## Design Decisions And Tradeoffs
 

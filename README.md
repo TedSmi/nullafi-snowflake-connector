@@ -3,8 +3,50 @@
 A Snowflake-native connector that routes data through Nullafi for sensitive-data
 detection and protection before it continues through a pipeline.
 
-**Status:** Phase 2 live connectivity passed — Nullafi rule configuration and
-secret-handling closeout remain
+**Status:** Phase 3 live validation passed, including real SSN obfuscation.
+Phase 2 secret-rotation and query-history closeout remain.
+
+## Phase 3: Batch Pipeline
+
+`snowflake/phase3_batch_pipeline.sql` implements the first end-to-end,
+Snowflake-native pipeline: synthetic input rows are grouped into conservative
+multi-value `/scan` requests, then results are written to an output table.
+Failures are written to a dead-letter table, and run metrics go to a run-log
+table.
+
+Live validation passed with the synthetic dataset: the happy path processed all
+three records, a deliberately malformed endpoint produced recoverable
+dead-letter entries, and a normal rerun selected no already-processed rows.
+After configuring Nullafi's application/rule/obfuscation policy, the Phase 2
+SSN smoke test returned `changed: true`; Phase 3 therefore records protected
+SSNs as `SUCCESS` with `VALUE_CHANGED = TRUE`.
+
+The script is intentionally a sample implementation, with fixed
+`NULLAFI_PHASE3_*` object names and the five fields in Phase 1's synthetic
+dataset. Configuration-driven production setup is Phase 6 work. It requires
+the secret and external-access integration created by Phase 2.
+
+Run it from a private Snowflake worksheet after completing Phase 2:
+
+```sql
+-- Run the complete snowflake/phase3_batch_pipeline.sql script first.
+CALL NULLAFI_PROCESS_BATCH();
+
+SELECT PROCESSING_STATUS, COUNT(*)
+FROM NULLAFI_PHASE3_SAMPLE_INPUT
+GROUP BY PROCESSING_STATUS;
+```
+
+The procedure processes `PENDING` rows by default. Its output writes use a
+`MERGE` keyed by source record and field, so the normal second run selects no
+already-processed records and cannot duplicate results. To retry only failed
+records, call `CALL NULLAFI_PROCESS_BATCH(100, TRUE);`.
+
+Because Nullafi's real batch and payload limits remain unmeasured, the current
+implementation limits each value to 1,000 characters and each outbound request
+to 20 field values. Oversized values and failed API batches go to
+`NULLAFI_PHASE3_ERROR_LOG`; they do not stop unrelated batches. See `SETUP.md`
+for the validation queries and safety notes.
 
 ## Phase 2: Snowflake Connectivity
 
@@ -14,9 +56,9 @@ Snowflake external network access. The implementation lives in
 
 Live validation succeeded after upgrading the Snowflake account: the procedure
 returned `ok: true`, HTTP `200`, and the expected JSON response. This proves
-Snowflake egress, secret retrieval, and Nullafi authentication. The returned
-test value was unchanged, as expected while no Nullafi obfuscation rule is
-attached to the `dlp test` namespace.
+Snowflake egress, secret retrieval, and Nullafi authentication. After the
+Nullafi policy was configured, the synthetic SSN test also returned
+`changed: true`, proving that obfuscation is applied.
 
 ### What Phase 2 Added
 
@@ -51,9 +93,9 @@ Example success shape (any HTTP 2xx `status_code` is successful):
 }
 ```
 
-`changed` is currently `false` because no dashboard rule is attached to the
-namespace/application. A 2xx response is the Phase 2 connectivity proof; a
-changed value is the next Nullafi-rule validation step.
+`changed: true` confirms that the configured policy returned an obfuscated
+value. A 2xx response remains the connectivity proof; `changed` is the policy
+application signal for this synthetic SSN test.
 
 See `SETUP.md` for privilege notes, troubleshooting, and the query-history check
 for secret exposure.
@@ -62,9 +104,8 @@ for secret exposure.
 
 - Rotate the Nullafi API key used during live setup, replace the Snowflake
   Secret with the new key, and run the query-history check in `SETUP.md`.
-- Configure an active Nullafi SSN obfuscation rule for `dlp test`.
-- Rerun the local POC and this Snowflake smoke test; confirm that the returned
-  test value is changed by the rule.
+- Optionally rerun the local Phase 1 POC in strict mode now that the Nullafi
+  SSN obfuscation policy is active.
 
 ## Phase 1: Local POC
 
@@ -157,15 +198,15 @@ request construction, and controlled API error handling.
   - `NULLAFI_SCAN_PATH=/scan`
   - `NULLAFI_NAMESPACE=dlp test`
 - The Nullafi dashboard shows the request and detects the SSN activity.
-- The dashboard currently shows `Rule: (None)`, so `/scan` returns the SSN
-  unchanged until a dashboard rule is attached to the app/namespace.
+- The dashboard policy now applies an SSN obfuscation rule to `dlp test`; the
+  Snowflake Phase 2 smoke test returned `changed: true` for the synthetic SSN.
 
 ### Left For Later
 
-- Configure the Nullafi dashboard so `dlp test` has an active SSN obfuscation
-  rule. Once that is fixed, rerun `python src/phase1_poc.py` without
-  `--allow-unchanged-expected`.
-- Confirm the final obfuscated response shape after a real rule is applied.
+- Rerun `python src/phase1_poc.py` without `--allow-unchanged-expected` to
+  validate the local strict assertion path against the active policy.
+- Confirm and document the final obfuscated response shape if it differs from
+  the current normalized field-level representation.
 - Run broader rate-limit and max-payload tests after obfuscation is working.
 - Phase 2 starts Snowflake connectivity: Network Rule, Secret, External Access
   Integration, and a minimal stored procedure that calls Nullafi.
