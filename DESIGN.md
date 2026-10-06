@@ -270,3 +270,31 @@ Decision: a config table in Snowflake holding, at minimum:
 - Live validation passed with the sample data: an inserted `cust_004` was the
   only row selected on the next run, and the following idle run selected zero
   rows without error.
+
+## Phase 5 task-automation design
+
+- `NULLAFI_PHASE5_PROCESS_TASK` is a standalone, user-managed-warehouse task
+  scheduled every five minutes. It calls the existing stream-consuming
+  procedure; a schedule is used instead of a stream condition because queued
+  retry work can remain after the stream offset has advanced. Snowflake permits
+  only one scheduled instance of a standalone task at a time, so an overlong
+  run causes the next scheduled time to be skipped rather than overlapping it.
+- The task has a five-minute timeout and suspends after three consecutive
+  task-level failures. This limits repeated warehouse use after a broken
+  privilege, secret, or deployment configuration. It intentionally does not
+  automatically retry failed source rows: that behavior remains an explicit
+  `RETRY_FAILED` procedure choice.
+- Monitoring uses two persistent surfaces. `NULLAFI_PHASE5_MONITOR_TASK`
+  queries `INFORMATION_SCHEMA.TASK_HISTORY` every five minutes and merges failed
+  processing-task executions into `NULLAFI_PHASE5_TASK_FAILURE_LOG`.
+  `NULLAFI_PHASE5_PIPELINE_ALERTS` exposes successful task executions that
+  nevertheless contain recoverable row/API failures from the pipeline run log.
+  This avoids relying on the Snowsight UI for operational status.
+- The monitor task is intentionally independent, not a child task. A child in a
+  task graph is skipped after a failed predecessor, which is precisely when the
+  failure needs recording. A future multi-step pipeline can use a root task and
+  child task graph for successful-path dependencies.
+- Live validation passed: the scheduled task processed one newly inserted
+  synthetic row, the next idle run selected zero rows, and an invalid-argument
+  task failure was persisted in `NULLAFI_PHASE5_TASK_FAILURE_LOG`. Both tasks
+  are suspended after POC validation to avoid idle warehouse use.

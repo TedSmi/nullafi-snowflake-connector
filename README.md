@@ -3,9 +3,44 @@
 A Snowflake-native connector that routes data through Nullafi for sensitive-data
 detection and protection before it continues through a pipeline.
 
-**Status:** Phase 4 live validation passed, including stream-based processing
-of one newly inserted row and a zero-row idle rerun. Phase 2 secret-rotation
-and query-history closeout remain.
+**Status:** Phase 5 live validation passed: the scheduled task processed one
+new row, a later idle run processed zero rows, and a deliberately invalid task
+invocation was recorded by the failure monitor. The Phase 5 tasks are currently
+suspended after POC validation to avoid idle warehouse use. Phase 2
+secret-rotation and query-history closeout remain.
+
+## Phase 5: Scheduled Automation
+
+`snowflake/phase5_automation.sql` adds two user-managed-warehouse tasks:
+`NULLAFI_PHASE5_PROCESS_TASK` calls `NULLAFI_PROCESS_BATCH()` every five
+minutes, and `NULLAFI_PHASE5_MONITOR_TASK` records failed processing-task runs
+in `NULLAFI_PHASE5_TASK_FAILURE_LOG`. Recoverable API and row failures remain
+visible through `NULLAFI_PHASE5_PIPELINE_ALERTS`, which reads the existing run
+log.
+
+Before running the script, complete Phases 2–4 in the same schema and replace
+`<YOUR_WAREHOUSE>` with a warehouse the task-owner role can use. That role also
+needs `CREATE TASK` in the schema, `USAGE` on the warehouse, and the privileges
+already required to call the pipeline procedure. The script resumes both tasks;
+suspend them before maintenance:
+
+```sql
+ALTER TASK NULLAFI_PHASE5_PROCESS_TASK SUSPEND;
+ALTER TASK NULLAFI_PHASE5_MONITOR_TASK SUSPEND;
+```
+
+To test or inspect automation without the Snowflake UI, use the `EXECUTE TASK`,
+`TASK_HISTORY`, run-log, and failure-log queries included at the end of the
+script. The task automatically suspends after three consecutive task-level
+failures; recoverable Nullafi failures do not fail the task, so monitor the
+pipeline-alert view as well.
+
+Live validation confirmed that the scheduled task processed one newly inserted
+synthetic row and that the next idle invocation processed zero rows. A safe
+invalid-argument test then produced a task failure that
+`NULLAFI_PHASE5_MONITOR_TASK` persisted to
+`NULLAFI_PHASE5_TASK_FAILURE_LOG`. The tasks were suspended after validation;
+resume both only when automated processing is wanted.
 
 ## Phase 4: Incremental Processing with Streams
 

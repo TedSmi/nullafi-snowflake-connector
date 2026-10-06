@@ -261,23 +261,29 @@ without error. Commit remains as the final Phase 4 checklist item.
 
 Goal: run the pipeline unattended, on a schedule, with visibility when it breaks.
 
-- [ ] **5.1 — Research Snowflake Tasks:** scheduling syntax, warehouse sizing for
+- [x] **5.1 — Research Snowflake Tasks:** scheduling syntax, warehouse sizing for
   the task, task history/error visibility, and how task DAGs work if you need
   multiple chained steps.
-- [ ] **5.2 — Create a Task** that runs the stream-consuming procedure on a
+- [x] **5.2 — Create a Task** that runs the stream-consuming procedure on a
   schedule.
-- [ ] **5.3 — Add monitoring.** Decide how you'll know if it fails — querying
+- [x] **5.3 — Add monitoring.** Decide how you'll know if it fails — querying
   `TASK_HISTORY`, an email notification integration, or writing failures to a
   monitored table. Pick one and implement it; don't leave this as a manual "go
   check the UI" step.
-- [ ] **5.4 — Test — normal operation:** let the task run unattended for a period,
+- [x] **5.4 — Test — normal operation:** let the task run unattended for a period,
   confirm new input rows get processed automatically.
-- [ ] **5.5 — Test — failure alerting:** deliberately break something (e.g.,
+- [x] **5.5 — Test — failure alerting:** deliberately break something (e.g.,
   revoke the secret temporarily) and confirm the failure is surfaced, not
   silent.
-- [ ] **5.6 — Document** how to enable/disable/resume the task and how to check
+- [x] **5.6 — Document** how to enable/disable/resume the task and how to check
   its health, in the README.
 - [ ] **5.7 — Commit to GitHub.**
+
+Phase 5 live validation is complete. The scheduled task processed one new
+synthetic row, a later idle run processed zero rows, and the safe invalid-
+argument test was persisted by the task-failure monitor. Both tasks are
+suspended after POC validation to avoid idle warehouse use. Commit remains as
+the final Phase 5 checklist item.
 
 ---
 
