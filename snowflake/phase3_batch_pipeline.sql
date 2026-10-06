@@ -1,5 +1,7 @@
 -- Phase 3: a rerun-safe sample pipeline from a Snowflake input table through
 -- Nullafi and into output, error, and run-metric tables.
+-- Phase 4 extends this sample with a stream-backed work queue so normal runs
+-- process only newly inserted source records.
 --
 -- This is deliberately a self-contained demonstration with synthetic data and
 -- fixed table names. Phase 6 will replace these names and column choices with
@@ -59,6 +61,35 @@ VALUES
     'No Sensitive Match',
     'Ordinary account note with no planted SSN or card.'
   );
+
+-- This is a standard stream rather than an append-only stream so its behavior
+-- is explicit and inspectable: Snowflake records inserts, updates, and
+-- deletes. The Phase 4 consumer intentionally queues only plain INSERT events
+-- (METADATA$ACTION = 'INSERT' and METADATA$ISUPDATE = FALSE). See DESIGN.md
+-- for the chosen insert-triggered update/delete policy.
+--
+-- SHOW_INITIAL_ROWS makes this self-contained sample process the three seeded
+-- records on its first call. In an existing production table, omit it when the
+-- desired behavior is to process only rows inserted after stream creation.
+CREATE OR REPLACE STREAM NULLAFI_PHASE4_INPUT_STREAM
+  ON TABLE NULLAFI_PHASE3_SAMPLE_INPUT
+  SHOW_INITIAL_ROWS = TRUE
+COMMENT = 'Captures input-table changes; Phase 4 queues only non-update inserts.';
+
+-- A stream offset is advanced only by a committed DML statement that consumes
+-- the stream. This durable, ID-only queue is that DML target. It holds no
+-- source field values, so plaintext continues to live only in the source
+-- table (and the temporary raw API diagnostics already documented below).
+CREATE OR REPLACE TABLE NULLAFI_PHASE4_WORK_QUEUE (
+  STREAM_ROW_ID STRING NOT NULL,
+  SOURCE_RECORD_ID STRING NOT NULL,
+  QUEUE_STATUS STRING NOT NULL DEFAULT 'PENDING',
+  QUEUED_AT TIMESTAMP_TZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+  LAST_ATTEMPT_AT TIMESTAMP_TZ,
+  LAST_ERROR_MESSAGE STRING,
+  CONSTRAINT NULLAFI_PHASE4_WORK_QUEUE_PK PRIMARY KEY (STREAM_ROW_ID)
+)
+COMMENT = 'Durable, insert-triggered work queue populated from NULLAFI_PHASE4_INPUT_STREAM.';
 
 -- One output row exists for each source-row/column pair. A MERGE in the
 -- procedure makes this natural key rerun-safe even though Snowflake does not
@@ -244,6 +275,71 @@ def _chunks_by_record(items_by_record):
     return batches
 
 
+def _consume_insert_stream_rows(session):
+    """Durably enqueue inserts and advance the stream only through DML.
+
+    This MERGE is deliberately performed before the external API work. A
+    committed DML statement consumes all currently visible stream records; the
+    WHERE clause enqueues only source inserts that are not update-images. Any
+    queued row that is not processed in this invocation remains durable for a
+    later run, including after an unexpected procedure failure.
+    """
+    _execute(
+        session,
+        """
+        MERGE INTO NULLAFI_PHASE4_WORK_QUEUE AS target
+        USING (
+          SELECT METADATA$ROW_ID AS STREAM_ROW_ID, RECORD_ID AS SOURCE_RECORD_ID
+          FROM NULLAFI_PHASE4_INPUT_STREAM
+          WHERE METADATA$ACTION = 'INSERT'
+            AND METADATA$ISUPDATE = FALSE
+        ) AS source
+          ON target.STREAM_ROW_ID = source.STREAM_ROW_ID
+        WHEN NOT MATCHED THEN INSERT (STREAM_ROW_ID, SOURCE_RECORD_ID, QUEUE_STATUS)
+          VALUES (source.STREAM_ROW_ID, source.SOURCE_RECORD_ID, 'PENDING')
+        """,
+    )
+
+
+def _skip_deleted_queued_rows(session, eligible_statuses):
+    """Do not send a record that was deleted after it entered the queue."""
+    _execute(
+        session,
+        f"""
+        UPDATE NULLAFI_PHASE4_WORK_QUEUE AS queue
+        SET QUEUE_STATUS = 'SKIPPED_SOURCE_DELETED',
+            LAST_ATTEMPT_AT = CURRENT_TIMESTAMP(),
+            LAST_ERROR_MESSAGE = 'Source record was deleted before scanning; no API request was made.'
+        WHERE QUEUE_STATUS IN ({eligible_statuses})
+          AND NOT EXISTS (
+            SELECT 1
+            FROM NULLAFI_PHASE3_SAMPLE_INPUT AS source
+            WHERE source.RECORD_ID = queue.SOURCE_RECORD_ID
+          )
+        """,
+    )
+
+
+def _update_queue_status(session, stream_row_id, status, error_message=None):
+    """Record a durable processing outcome without binding nullable strings."""
+    error_expression = "NULL" if error_message is None else "?"
+    params = [status]
+    if error_message is not None:
+        params.append(error_message[:2000])
+    params.append(stream_row_id)
+    _execute(
+        session,
+        f"""
+        UPDATE NULLAFI_PHASE4_WORK_QUEUE
+        SET QUEUE_STATUS = ?,
+            LAST_ATTEMPT_AT = CURRENT_TIMESTAMP(),
+            LAST_ERROR_MESSAGE = {error_expression}
+        WHERE STREAM_ROW_ID = ?
+        """,
+        params,
+    )
+
+
 def run(session, max_rows, retry_failed, nullafi_namespace, nullafi_base_url, nullafi_scan_path):
     if max_rows is None or int(max_rows) < 1 or int(max_rows) > 10000:
         raise ValueError("MAX_ROWS must be between 1 and 10000")
@@ -267,14 +363,22 @@ def run(session, max_rows, retry_failed, nullafi_namespace, nullafi_base_url, nu
 
     try:
         eligible_statuses = "'PENDING', 'FAILED'" if retry_failed else "'PENDING'"
-        # Object names and column names are constants in this Phase 3 sample;
+        # This MERGE is the stream-consumption boundary. A SELECT alone would
+        # repeatedly return the same changes and would not move the offset.
+        _consume_insert_stream_rows(session)
+        _skip_deleted_queued_rows(session, eligible_statuses)
+
+        # Object names and column names are constants in this Phase 3/4 sample;
         # Phase 6 will validate and parameterize them through a config table.
         records = session.sql(
             f"""
-            SELECT RECORD_ID, EMAIL, SSN, CREDIT_CARD, FULL_NAME, NOTES
-            FROM NULLAFI_PHASE3_SAMPLE_INPUT
-            WHERE PROCESSING_STATUS IN ({eligible_statuses})
-            ORDER BY RECORD_ID
+            SELECT queue.STREAM_ROW_ID, source.RECORD_ID, source.EMAIL, source.SSN,
+                   source.CREDIT_CARD, source.FULL_NAME, source.NOTES
+            FROM NULLAFI_PHASE4_WORK_QUEUE AS queue
+            JOIN NULLAFI_PHASE3_SAMPLE_INPUT AS source
+              ON source.RECORD_ID = queue.SOURCE_RECORD_ID
+            WHERE queue.QUEUE_STATUS IN ({eligible_statuses})
+            ORDER BY queue.QUEUED_AT, queue.STREAM_ROW_ID
             LIMIT {max_rows}
             """
         ).collect()
@@ -393,9 +497,11 @@ def run(session, max_rows, retry_failed, nullafi_namespace, nullafi_base_url, nu
 
         for record in records:
             record_id = record["RECORD_ID"]
+            stream_row_id = record["STREAM_ROW_ID"]
             errors = record_errors[record_id]
             if errors:
                 metrics["rows_failed"] += 1
+                _update_queue_status(session, stream_row_id, "FAILED", "; ".join(errors))
                 _execute(
                     session,
                     """
@@ -409,6 +515,7 @@ def run(session, max_rows, retry_failed, nullafi_namespace, nullafi_base_url, nu
                 )
             else:
                 metrics["rows_processed"] += 1
+                _update_queue_status(session, stream_row_id, "PROCESSED")
                 _execute(
                     session,
                     """
@@ -499,3 +606,32 @@ CALL NULLAFI_PROCESS_BATCH();
 --
 -- To intentionally retry recoverable failures without resetting them:
 -- CALL NULLAFI_PROCESS_BATCH(100, TRUE);
+
+-- ---------------------------------------------------------------------------
+-- 4. Phase 4 stream validation
+-- ---------------------------------------------------------------------------
+-- New-row test: this INSERT is captured by NULLAFI_PHASE4_INPUT_STREAM. The
+-- next call first merges the stream into the durable work queue, then scans
+-- only this new row. Its return value should report ROWS_SELECTED = 1.
+INSERT INTO NULLAFI_PHASE3_SAMPLE_INPUT (
+  RECORD_ID, EMAIL, SSN, CREDIT_CARD, FULL_NAME, NOTES
+)
+VALUES (
+  'cust_004',
+  'new.customer@example.net',
+  '987-65-4321',
+  '4242424242424242',
+  'New Customer',
+  'Synthetic row inserted after the stream was created.'
+);
+
+CALL NULLAFI_PROCESS_BATCH();
+
+SELECT SOURCE_RECORD_ID, QUEUE_STATUS, QUEUED_AT, LAST_ATTEMPT_AT
+FROM NULLAFI_PHASE4_WORK_QUEUE
+ORDER BY QUEUED_AT, SOURCE_RECORD_ID;
+
+-- Idle-run test: there are no pending queue rows and only the connector's own
+-- source-status updates in the stream. The DML stream-consumption step ignores
+-- those update images, so this returns ROWS_SELECTED = 0 without an error.
+CALL NULLAFI_PROCESS_BATCH();

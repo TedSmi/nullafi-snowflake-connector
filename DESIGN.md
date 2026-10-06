@@ -240,3 +240,33 @@ Decision: a config table in Snowflake holding, at minimum:
   an isolated POC. It is not yet a drop-in production installer: phase 6 will
   source table/column/namespace configuration from the planned Snowflake config
   table and validate that configuration before execution.
+
+## Phase 4 incremental-stream design
+
+- `NULLAFI_PHASE4_INPUT_STREAM` is a standard stream on
+  `NULLAFI_PHASE3_SAMPLE_INPUT`. It exposes insert, update, and delete changes
+  plus Snowflake's `METADATA$ACTION`, `METADATA$ISUPDATE`, and
+  `METADATA$ROW_ID` metadata. The self-contained sample sets
+  `SHOW_INITIAL_ROWS = TRUE` so its seeded data is processed once; a production
+  stream created after backfill should omit that option.
+- The procedure consumes the stream with a `MERGE` into
+  `NULLAFI_PHASE4_WORK_QUEUE`, not a standalone `SELECT`. Snowflake advances a
+  stream offset only when a DML transaction that reads the stream commits. The
+  queue therefore makes the consumption durable before any network request and
+  preserves work that exceeds `MAX_ROWS` or survives a later procedure failure.
+  It stores only the stream row ID and source record ID, not a second copy of
+  the source's plaintext fields.
+- Processing is deliberately insert-triggered for this POC. The queue accepts
+  only `METADATA$ACTION = 'INSERT'` with `METADATA$ISUPDATE = FALSE`.
+  Connector-written source status changes, upstream updates, and deletes are
+  consumed from the stream but do not cause a rescan or remove historic output.
+  If an unprocessed queued source row is deleted, the queue records
+  `SKIPPED_SOURCE_DELETED` and makes no API call. A value update that occurs
+  before the initial queued scan may be read at its latest source-table value;
+  updates after processing require a new source record ID in this POC.
+- This policy avoids accidental repeat scanning and preserves audit history,
+  but it is not a general change-data-capture contract. A reusable connector
+  should make update/delete behavior configurable in Phase 6.
+- Live validation passed with the sample data: an inserted `cust_004` was the
+  only row selected on the next run, and the following idle run selected zero
+  rows without error.

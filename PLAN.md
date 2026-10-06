@@ -233,23 +233,27 @@ the final Phase 3 checklist item.
 
 Goal: only process new rows, instead of re-scanning the whole table every run.
 
-- [ ] **4.1 — Research Snowflake Streams:** how they track inserts/updates/
+- [x] **4.1 — Research Snowflake Streams:** how they track inserts/updates/
   deletes, and that the stream offset only advances when consumed inside a DML
   transaction (important — reading a stream in a `SELECT` alone doesn't advance
   it).
-- [ ] **4.2 — Create a Stream** on the input table.
-- [ ] **4.3 — Modify the batch procedure** to consume from the stream instead of
+- [x] **4.2 — Create a Stream** on the input table.
+- [x] **4.3 — Modify the batch procedure** to consume from the stream instead of
   scanning the full table.
-- [ ] **4.4 — Test — new rows only:** insert new rows, run the procedure, confirm
+- [x] **4.4 — Test — new rows only:** insert new rows, run the procedure, confirm
   only the new rows were processed.
-- [ ] **4.5 — Test — idle run:** run the procedure again with no new inserts,
+- [x] **4.5 — Test — idle run:** run the procedure again with no new inserts,
   confirm it processes zero rows and doesn't error.
-- [ ] **4.6 — Decide and document update/delete behavior.** Streams also capture
+- [x] **4.6 — Decide and document update/delete behavior.** Streams also capture
   updates/deletes — explicitly decide whether this connector supports
   re-scanning updated rows, or is insert-only, and document that choice (don't
   leave it as an accidental gap).
-- [ ] **4.7 — Update README/DESIGN.md** with streaming behavior and limitations.
+- [x] **4.7 — Update README/DESIGN.md** with streaming behavior and limitations.
 - [ ] **4.8 — Commit to GitHub.**
+
+Phase 4 live validation is complete: the stream queued and processed only the
+newly inserted sample record, and the following idle run selected zero rows
+without error. Commit remains as the final Phase 4 checklist item.
 
 ---
 

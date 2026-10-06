@@ -15,6 +15,8 @@ def test_phase3_sql_creates_pipeline_tables_and_procedure() -> None:
     assert "CREATE OR REPLACE TABLE NULLAFI_PHASE3_SCAN_OUTPUT" in sql
     assert "CREATE OR REPLACE TABLE NULLAFI_PHASE3_ERROR_LOG" in sql
     assert "CREATE OR REPLACE TABLE NULLAFI_PHASE3_RUN_LOG" in sql
+    assert "CREATE OR REPLACE STREAM NULLAFI_PHASE4_INPUT_STREAM" in sql
+    assert "CREATE OR REPLACE TABLE NULLAFI_PHASE4_WORK_QUEUE" in sql
     assert "CREATE OR REPLACE PROCEDURE NULLAFI_PROCESS_BATCH" in sql
 
 
@@ -37,6 +39,19 @@ def test_phase3_sql_has_recoverable_errors_and_idempotent_writes() -> None:
     assert "RETRY_FAILED BOOLEAN DEFAULT FALSE" in sql
     assert "NULLAFI_PHASE3_RUN_LOG" in sql
     assert "DURATION_MS" in sql
+
+
+def test_phase4_consumes_the_stream_into_a_durable_insert_only_work_queue() -> None:
+    sql = read_sql()
+
+    assert "SHOW_INITIAL_ROWS = TRUE" in sql
+    assert "def _consume_insert_stream_rows(session):" in sql
+    assert "MERGE INTO NULLAFI_PHASE4_WORK_QUEUE AS target" in sql
+    assert "FROM NULLAFI_PHASE4_INPUT_STREAM" in sql
+    assert "METADATA$ACTION = 'INSERT'" in sql
+    assert "METADATA$ISUPDATE = FALSE" in sql
+    assert "FROM NULLAFI_PHASE4_WORK_QUEUE AS queue" in sql
+    assert "_skip_deleted_queued_rows(session, eligible_statuses)" in sql
 
 
 def test_phase3_sql_uses_snowflake_secret_alias_without_literal_key() -> None:

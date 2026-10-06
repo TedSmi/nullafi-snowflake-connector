@@ -45,7 +45,7 @@ class FakeSnowparkSession:
 
     def sql(self, statement, params=None):
         self.statements.append((statement, params or []))
-        if "FROM NULLAFI_PHASE3_SAMPLE_INPUT" in statement:
+        if "FROM NULLAFI_PHASE4_WORK_QUEUE AS queue" in statement:
             return FakeQuery(self.records)
         return FakeQuery([])
 
@@ -89,6 +89,7 @@ def test_handler_batches_field_values_and_marks_successful_rows_processed(monkey
     handler["HTTP_SESSION"] = http
     records = [
         {
+            "STREAM_ROW_ID": "stream_row_001",
             "RECORD_ID": "cust_001",
             "EMAIL": "alex.test@example.com",
             "SSN": "122-12-8348",
@@ -97,6 +98,7 @@ def test_handler_batches_field_values_and_marks_successful_rows_processed(monkey
             "NOTES": "note one",
         },
         {
+            "STREAM_ROW_ID": "stream_row_002",
             "RECORD_ID": "cust_002",
             "EMAIL": "billing@example.org",
             "SSN": "078-05-1120",
@@ -120,6 +122,15 @@ def test_handler_batches_field_values_and_marks_successful_rows_processed(monkey
     assert len(http.calls) == 1
     assert len(http.calls[0]["json"]) == 9  # One of ten source values is null.
     assert all(key.startswith("v_") for key in http.calls[0]["json"])
+    assert any(
+        "MERGE INTO NULLAFI_PHASE4_WORK_QUEUE" in sql
+        and "FROM NULLAFI_PHASE4_INPUT_STREAM" in sql
+        for sql, _ in session.statements
+    )
+    assert any(
+        "FROM NULLAFI_PHASE4_WORK_QUEUE AS queue" in sql
+        for sql, _ in session.statements
+    )
     assert sum("MERGE INTO NULLAFI_PHASE3_SCAN_OUTPUT" in sql for sql, _ in session.statements) == 10
     # The null NOTES field must become SQL NULL, not the invalid BOOLEAN string
     # "None" that Snowpark can produce when it binds a Python None parameter.
@@ -131,6 +142,7 @@ def test_handler_dead_letters_failed_http_batch_without_raising(monkeypatch) -> 
     handler["HTTP_SESSION"] = FailedHttpSession()
     records = [
         {
+            "STREAM_ROW_ID": "stream_row_failure",
             "RECORD_ID": "cust_failure",
             "EMAIL": "a@example.test",
             "SSN": "122-12-8348",
@@ -153,6 +165,28 @@ def test_handler_dead_letters_failed_http_batch_without_raising(monkeypatch) -> 
     assert any("INSERT INTO NULLAFI_PHASE3_ERROR_LOG" in sql for sql, _ in session.statements)
     assert any(
         "PROCESSING_STATUS = 'FAILED'" in sql for sql, _ in session.statements
+    )
+
+
+def test_handler_idle_run_consumes_stream_metadata_without_calling_nullafi(monkeypatch) -> None:
+    handler = load_handler(monkeypatch)
+    http = EchoHttpSession()
+    handler["HTTP_SESSION"] = http
+    session = FakeSnowparkSession([])
+
+    result = handler["run"](
+        session, 100, False, "dlp test", "https://api.example.test", "/scan"
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["rows_selected"] == 0
+    assert result["rows_processed"] == 0
+    assert result["api_calls"] == 0
+    assert http.calls == []
+    assert any(
+        "MERGE INTO NULLAFI_PHASE4_WORK_QUEUE" in sql
+        and "FROM NULLAFI_PHASE4_INPUT_STREAM" in sql
+        for sql, _ in session.statements
     )
 
 

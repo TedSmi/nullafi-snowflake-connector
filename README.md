@@ -3,8 +3,33 @@
 A Snowflake-native connector that routes data through Nullafi for sensitive-data
 detection and protection before it continues through a pipeline.
 
-**Status:** Phase 3 live validation passed, including real SSN obfuscation.
-Phase 2 secret-rotation and query-history closeout remain.
+**Status:** Phase 4 live validation passed, including stream-based processing
+of one newly inserted row and a zero-row idle rerun. Phase 2 secret-rotation
+and query-history closeout remain.
+
+## Phase 4: Incremental Processing with Streams
+
+`snowflake/phase3_batch_pipeline.sql` now creates
+`NULLAFI_PHASE4_INPUT_STREAM` and a durable, ID-only
+`NULLAFI_PHASE4_WORK_QUEUE`. Each invocation first consumes the stream through
+a `MERGE` into that queue, then sends only queued inserts to Nullafi. This is
+important because a stream read by `SELECT` alone does not advance its offset.
+The queue also prevents unprocessed work from being lost when an invocation is
+limited by `MAX_ROWS` or fails after the stream is consumed.
+
+The sample uses insert-triggered processing:
+
+- An insert is scanned once.
+- An update does not trigger a rescan; a new record ID is required to scan a
+  changed value in this POC.
+- A delete does not delete historical output. If a queued record disappears
+  before scanning, it is marked `SKIPPED_SOURCE_DELETED` and is not sent to
+  Nullafi.
+
+The SQL script includes a new-row test that inserts `cust_004`, followed by an
+idle-run test. The first call should select one row; the next should select
+zero. Run it after the initial Phase 3 validation in the same private
+worksheet.
 
 ## Phase 3: Batch Pipeline
 
@@ -45,8 +70,7 @@ records, call `CALL NULLAFI_PROCESS_BATCH(100, TRUE);`.
 Because Nullafi's real batch and payload limits remain unmeasured, the current
 implementation limits each value to 1,000 characters and each outbound request
 to 20 field values. Oversized values and failed API batches go to
-`NULLAFI_PHASE3_ERROR_LOG`; they do not stop unrelated batches. See `SETUP.md`
-for the validation queries and safety notes.
+`NULLAFI_PHASE3_ERROR_LOG`; they do not stop unrelated batches.
 
 ## Phase 2: Snowflake Connectivity
 
