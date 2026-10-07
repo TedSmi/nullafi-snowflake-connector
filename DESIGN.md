@@ -60,6 +60,40 @@ Decision: a config table in Snowflake holding, at minimum:
 - reference to a Snowflake Secret holding the API key (the key itself never lives in
   this table)
 
+### Phase 6 implementation
+
+`snowflake/phase6_setup.sql` implements this decision with one `DEFAULT` row in
+`NULLAFI_CONNECTOR_CONFIG`. It configures the source table, source key,
+`SCAN_COLUMNS` array, output table, namespace, batch limits, raw-response
+retention, and insert-only policy. The installer owns all other operational
+objects and does not alter the source table.
+
+Snowflake binds Python procedure secrets at procedure-creation time. Therefore
+the reusable installer creates and binds a connector-owned
+`NULLAFI_CONNECTOR_API_KEY`, while recording its fully qualified reference in
+the configuration table. This preserves the important property that the API key
+is never stored in configuration, source code, or logs; allowing arbitrary
+runtime secret names would not be compatible with Snowflake's static `SECRETS`
+binding.
+
+Both the validator and processor accept only simple unquoted identifiers before
+using configured object or column names in dynamic SQL. They then `DESC TABLE`
+the source and fail with an actionable error for missing key/scan columns,
+duplicate scan columns, an empty namespace, invalid batch limits, or an
+unsupported update policy. This is deliberately narrower than accepting every
+Snowflake identifier form: it avoids treating config as executable SQL.
+
+Clean-environment validation passed in a fresh Snowflake database with separate
+source, connector, and protected-output schemas. Snowpark returned the stored
+`SCAN_COLUMNS` SQL `ARRAY` as JSON text inside the Python procedure, so the
+validator and processor deliberately normalize both JSON-text and native-list
+representations before validating column mappings. A synthetic inserted row
+produced one successful API batch, three output rows, and no error-log rows; an
+immediate idle call selected zero rows and made zero API calls. A second
+synthetic row was successfully processed through the scheduled task, with a
+`SUCCEEDED` task-history state and no task-failure or pipeline-alert records.
+Both tasks were suspended after validation to avoid idle warehouse use.
+
 ## Open items carried into Phase 1
 - Obfuscation confirmation is complete: the matching API-scanning application
   filter plus active SSN rule changed the synthetic SSN in the Phase 2 smoke
@@ -237,9 +271,9 @@ Decision: a config table in Snowflake holding, at minimum:
 
 ### Scope boundary
 - Phase 3 uses fixed sample names and columns so it can be run and reviewed as
-  an isolated POC. It is not yet a drop-in production installer: phase 6 will
-  source table/column/namespace configuration from the planned Snowflake config
-  table and validate that configuration before execution.
+  an isolated POC. It is not the drop-in production installer; Phase 6 sources
+  table/column/namespace configuration from `NULLAFI_CONNECTOR_CONFIG` and
+  validates it before execution.
 
 ## Phase 4 incremental-stream design
 
@@ -266,7 +300,9 @@ Decision: a config table in Snowflake holding, at minimum:
   updates after processing require a new source record ID in this POC.
 - This policy avoids accidental repeat scanning and preserves audit history,
   but it is not a general change-data-capture contract. A reusable connector
-  should make update/delete behavior configurable in Phase 6.
+  exposes `UPDATE_POLICY` in its configuration and currently validates the
+  deliberately conservative `INSERT_ONLY` value. Update/delete rescan modes
+  remain future work.
 - Live validation passed with the sample data: an inserted `cust_004` was the
   only row selected on the next run, and the following idle run selected zero
   rows without error.

@@ -3,11 +3,109 @@
 A Snowflake-native connector that routes data through Nullafi for sensitive-data
 detection and protection before it continues through a pipeline.
 
-**Status:** Phase 5 live validation passed: the scheduled task processed one
-new row, a later idle run processed zero rows, and a deliberately invalid task
-invocation was recorded by the failure monitor. The Phase 5 tasks are currently
-suspended after POC validation to avoid idle warehouse use. Phase 2
-secret-rotation and query-history closeout remain.
+**Status:** Phase 6 clean-environment validation passed. The reusable installer
+provisioned successfully in a fresh Snowflake database/schema, processed a
+synthetic row through Nullafi, completed an idle run without an API call, and
+ran successfully through both scheduled-task and monitoring paths. The tasks
+were suspended after validation. Release steps and Phase 2 secret-rotation and
+query-history closeout remain.
+
+## Phase 6: Reusable connector
+
+Use [`snowflake/phase6_setup.sql`](snowflake/phase6_setup.sql) for a new
+installation. It is the supported entry point for a real source table; the
+earlier phase scripts remain documented POCs and should not be mixed into the
+same schema.
+
+The parameter block at the top of the script supplies the source table, stable
+source key, JSON array of source columns to scan, output table, Nullafi
+namespace, task warehouse, and schedule. It creates the secret, network rule,
+external-access integration, config table, stream, durable ID-only queue,
+output/error/run-log tables, processor, monitor, and suspended tasks.
+
+```
+source table insert
+       |
+ Snowflake stream -> durable ID-only queue -> Nullafi /scan
+       |                                        |
+       +------------------------------> configured output table
+                                             |
+                                    run/error/task-failure monitoring
+```
+
+The connector is insert-triggered: updates do not rescan an existing source
+key, and a queued row deleted before processing is recorded as skipped. It
+does not alter the source table or add connector status columns to it. Results
+are idempotently merged by configuration, source key, and column.
+
+### Validation status
+
+Clean-environment validation used a fresh Snowflake database with separate
+source, connector, and protected-output schemas. The installer accepted the
+configured `ARRAY` scan-column mapping, its preflight validation passed, and a
+new synthetic three-field row produced one successful API batch and three
+output rows with no dead-letter entries. The next manual invocation selected
+zero rows and made zero API calls. Finally, a second synthetic row was
+successfully processed through `NULLAFI_CONNECTOR_PROCESS_TASK`; its task
+history reported `SUCCEEDED`, and both the task-failure log and pipeline-alert
+view were empty. The validation tasks were then suspended to avoid idle
+warehouse use.
+
+### Install and operate
+
+1. Create a new connector schema and choose a role with the privileges below.
+2. Open the Phase 6 script in a private worksheet, set its context and replace
+   the parameter-block examples. Replace the API-key placeholder only in that
+   private worksheet.
+3. Run the whole script. Its preflight procedure verifies the source table and
+   every configured key/scan column before it creates the tasks.
+4. Inspect `NULLAFI_CONNECTOR_CONFIG`, then make the first controlled call:
+
+   ```sql
+   CALL NULLAFI_CONNECTOR_PROCESS();
+   SELECT * FROM NULLAFI_CONNECTOR_RUN_LOG ORDER BY STARTED_AT DESC;
+   ```
+
+5. Once that succeeds, enable scheduled operation:
+
+   ```sql
+   ALTER TASK NULLAFI_CONNECTOR_PROCESS_TASK RESUME;
+   ALTER TASK NULLAFI_CONNECTOR_MONITOR_TASK RESUME;
+   ```
+
+The setup role needs `USAGE` on the connector database/schema and source and
+output locations; `CREATE NETWORK RULE`, `CREATE SECRET`, `CREATE PROCEDURE`,
+`CREATE TABLE`, `CREATE STREAM`, `CREATE TASK`, and (account-level) `CREATE
+INTEGRATION`. The task owner also needs `USAGE` on the chosen warehouse. Grant
+the connector owner `SELECT` on the source table and `CREATE`/DML privileges in
+the output schema. Snowflake's external-access feature and Python packages
+`requests` and `snowflake-snowpark-python` must be available.
+
+### Configuration and troubleshooting
+
+- Identifiers are intentionally limited to unquoted one-, two-, or three-part
+  names. This makes the dynamic SQL safe and gives a clear error for quoted or
+  malformed mappings.
+- `SCAN_COLUMNS` must be a non-empty JSON array; its entries must exist on the
+  source table, be unique, and exclude the source key.
+- `MAX_FIELD_CHARACTERS` and `MAX_VALUES_PER_REQUEST` default to conservative,
+  configurable limits because Nullafi's production limits are not measured.
+- `STORE_RAW_RESPONSES` defaults to `FALSE`; leave it there unless temporary
+  diagnostics justify storing responses that might contain sensitive data.
+- A `401`/`403` is generally a missing or incorrectly scoped Nullafi API key;
+  an external-access error usually means the account lacks the required feature
+  or privilege; a preflight error identifies the bad table or column mapping.
+
+Known limitations: only unquoted identifiers and `INSERT_ONLY` change handling
+are currently supported. A source key must be stable and unique. Entity types
+are not written because they are absent from the confirmed `/scan` response.
+The installer creates/replaces connector-owned objects, so review the script
+before rerunning it in a populated connector schema.
+
+### Roadmap
+
+A Snowflake Native App is a potential future packaging option. It is explicitly
+out of scope for this release.
 
 ## Phase 5: Scheduled Automation
 
@@ -83,8 +181,9 @@ SSNs as `SUCCESS` with `VALUE_CHANGED = TRUE`.
 
 The script is intentionally a sample implementation, with fixed
 `NULLAFI_PHASE3_*` object names and the five fields in Phase 1's synthetic
-dataset. Configuration-driven production setup is Phase 6 work. It requires
-the secret and external-access integration created by Phase 2.
+dataset. For configuration-driven production setup, use the Phase 6 installer
+above instead. The sample requires the secret and external-access integration
+created by Phase 2.
 
 Run it from a private Snowflake worksheet after completing Phase 2:
 

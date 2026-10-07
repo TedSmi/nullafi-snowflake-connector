@@ -292,21 +292,21 @@ the final Phase 5 checklist item.
 Goal: someone who has never seen this repo can clone it, run one setup script,
 and have it working against their own tables.
 
-- [ ] **6.1 — Parameterize everything.** No hardcoded table/schema/database names
+- [x] **6.1 — Parameterize everything.** No hardcoded table/schema/database names
   or column lists anywhere in the code — pull them from the config approach you
   decided in Phase 0.5.
-- [ ] **6.2 — Write a single setup script** (SQL) that provisions everything —
+- [x] **6.2 — Write a single setup script** (SQL) that provisions everything —
   network rule, secret, integration, tables, stream, task — from a new user's
   own parameters.
-- [ ] **6.3 — Add input validation and clear error messages** for common
+- [x] **6.3 — Add input validation and clear error messages** for common
   misconfiguration (missing secret, wrong table schema, bad column mapping).
-- [ ] **6.4 — Full comment pass.** Re-read every file as if you're a stranger
+- [x] **6.4 — Full comment pass.** Re-read every file as if you're a stranger
   seeing it for the first time; add/clarify comments wherever intent isn't
   obvious.
-- [ ] **6.5 — Clean-environment test.** Provision a *fresh* Snowflake schema and
+- [x] **6.5 — Clean-environment test.** Provision a *fresh* Snowflake schema and
   set the whole thing up using only the setup script and docs — no manual steps
   you forgot to write down. This is the real test of "drop-in."
-- [ ] **6.6 — Finalize the README** with:
+- [x] **6.6 — Finalize the README** with:
   - Overview and architecture (a simple diagram or description of the flow)
   - Prerequisites
   - Setup instructions
