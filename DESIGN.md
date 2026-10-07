@@ -62,7 +62,7 @@ Decision: a config table in Snowflake holding, at minimum:
 
 ### Phase 6 implementation
 
-`snowflake/phase6_setup.sql` implements this decision with one `DEFAULT` row in
+`snowflake/install_connector.sql` implements this decision with one `DEFAULT` row in
 `NULLAFI_CONNECTOR_CONFIG`. It configures the source table, source key,
 `SCAN_COLUMNS` array, output table, namespace, batch limits, raw-response
 retention, and insert-only policy. The installer owns all other operational

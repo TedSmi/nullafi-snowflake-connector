@@ -1,8 +1,8 @@
-"""Static and local-Python checks for the reusable Phase 6 installer.
+"""Static and local-Python checks for the reusable installer.
 
-These checks intentionally do not require a Snowflake account. A fresh-schema
-run is tracked separately in PLAN.md because it needs a real account, role,
-warehouse, and Nullafi key.
+These checks intentionally do not require a Snowflake account. They complement
+the documented clean-environment validation, which requires a real account,
+role, warehouse, and Nullafi key.
 """
 
 import sys
@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 
-SQL_PATH = Path("snowflake/phase6_setup.sql")
+SQL_PATH = Path("snowflake/install_connector.sql")
 
 
 def read_sql() -> str:

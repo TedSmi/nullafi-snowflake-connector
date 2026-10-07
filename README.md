@@ -1,370 +1,248 @@
-# nullafi-snowflake-connector
+# Nullafi Snowflake Connector
 
-A Snowflake-native connector that routes data through Nullafi for sensitive-data
-detection and protection before it continues through a pipeline.
+A Snowflake-native connector that sends selected fields through Nullafi before
+downstream use. It is installed with one SQL script and provides an
+insert-triggered pipeline, durable work queue, idempotent result table, error
+log, run log, and task-failure monitoring.
 
-**Status:** Phase 6 clean-environment validation passed. The reusable installer
-provisioned successfully in a fresh Snowflake database/schema, processed a
-synthetic row through Nullafi, completed an idle run without an API call, and
-ran successfully through both scheduled-task and monitoring paths. The tasks
-were suspended after validation. Release steps and Phase 2 secret-rotation and
-query-history closeout remain.
+**Status:** the installer has passed clean-environment validation and the local
+test suite. It is ready for controlled evaluation. Complete the
+[production-readiness checklist](#production-readiness-checklist) before using
+it with production data.
 
-## Phase 6: Reusable connector
+## How it works
 
-Use [`snowflake/phase6_setup.sql`](snowflake/phase6_setup.sql) for a new
-installation. It is the supported entry point for a real source table; the
-earlier phase scripts remain documented POCs and should not be mixed into the
-same schema.
-
-The parameter block at the top of the script supplies the source table, stable
-source key, JSON array of source columns to scan, output table, Nullafi
-namespace, task warehouse, and schedule. It creates the secret, network rule,
-external-access integration, config table, stream, durable ID-only queue,
-output/error/run-log tables, processor, monitor, and suspended tasks.
-
-```
-source table insert
-       |
- Snowflake stream -> durable ID-only queue -> Nullafi /scan
-       |                                        |
-       +------------------------------> configured output table
-                                             |
-                                    run/error/task-failure monitoring
+```text
+source-table INSERT
+        |
+Snowflake stream -> durable ID-only queue -> Nullafi /scan
+        |                                      |
+        +------------------------------------> configured output table
+                                                   |
+                                    run log, error log, task-failure log
 ```
 
-The connector is insert-triggered: updates do not rescan an existing source
-key, and a queued row deleted before processing is recorded as skipped. It
-does not alter the source table or add connector status columns to it. Results
-are idempotently merged by configuration, source key, and column.
+The processor consumes only plain `INSERT` stream events. It writes one output
+row per configured source field and merges by configuration, source record ID,
+and source column, so a normal retry does not create duplicate output rows.
+The source table is never changed.
 
-### Validation status
+The supported installer is [`snowflake/install_connector.sql`](snowflake/install_connector.sql).
+The earlier SQL files are retained as isolated examples and diagnostics; do not
+run them in the connector schema.
 
-Clean-environment validation used a fresh Snowflake database with separate
-source, connector, and protected-output schemas. The installer accepted the
-configured `ARRAY` scan-column mapping, its preflight validation passed, and a
-new synthetic three-field row produced one successful API batch and three
-output rows with no dead-letter entries. The next manual invocation selected
-zero rows and made zero API calls. Finally, a second synthetic row was
-successfully processed through `NULLAFI_CONNECTOR_PROCESS_TASK`; its task
-history reported `SUCCEEDED`, and both the task-failure log and pipeline-alert
-view were empty. The validation tasks were then suspended to avoid idle
-warehouse use.
+## Before you install
 
-### Install and operate
+You need:
 
-1. Create a new connector schema and choose a role with the privileges below.
-2. Open the Phase 6 script in a private worksheet, set its context and replace
-   the parameter-block examples. Replace the API-key placeholder only in that
-   private worksheet.
-3. Run the whole script. Its preflight procedure verifies the source table and
-   every configured key/scan column before it creates the tasks.
-4. Inspect `NULLAFI_CONNECTOR_CONFIG`, then make the first controlled call:
+- A Snowflake account with external network access and Python stored procedure
+  packages `requests` and `snowflake-snowpark-python` available.
+- A role with the privileges to create the connector objects: network rule,
+  secret, procedure, table, stream, task, and (at account level) external
+  access integration. The task owner also needs `USAGE` on its warehouse.
+- `SELECT` access to the source table and permission to create/write the output
+  table in the chosen output schema.
+- A Nullafi API key that can scan in the configured namespace, and an active
+  Nullafi policy that produces the protection behavior you expect.
+- A source table with a stable, non-null, unique key. Every selected scan column
+  must exist. Use simple, unquoted Snowflake identifiers only; quoted or
+  mixed-case identifiers are intentionally unsupported.
+
+Plan the data boundary before installation. Nullafi receives non-null configured
+field values. The output table contains returned (potentially obfuscated)
+values. Error and raw-response storage can be sensitive; see
+[Data handling](#data-handling).
+
+## Install
+
+1. Create or select a dedicated connector schema. The installer uses
+   `CREATE OR REPLACE` for connector-owned objects named `NULLAFI_CONNECTOR_*`.
+   Do not run it in a schema containing unrelated objects with those names.
+2. Open [`snowflake/install_connector.sql`](snowflake/install_connector.sql) in
+   a private Snowflake worksheet. Set the four `USE ...` context statements,
+   then set every value in the parameter block: source table, source key, scan
+   columns, output table, Nullafi namespace, task warehouse, and schedule.
+3. Review the optional batch and raw-response settings in that same parameter
+   block. Replace `<PASTE_NULLAFI_API_KEY_HERE>` only in the private worksheet. Do
+   not save the key in source control, a shared worksheet, or application logs.
+4. Run the complete script. It creates the objects, validates the table/column
+   mapping, and leaves both tasks suspended.
+5. Review the configuration and make one controlled processing call:
 
    ```sql
+   SELECT * FROM NULLAFI_CONNECTOR_CONFIG;
+   CALL NULLAFI_CONNECTOR_VALIDATE_CONFIG();
    CALL NULLAFI_CONNECTOR_PROCESS();
-   SELECT * FROM NULLAFI_CONNECTOR_RUN_LOG ORDER BY STARTED_AT DESC;
+
+   SELECT *
+   FROM NULLAFI_CONNECTOR_RUN_LOG
+   ORDER BY STARTED_AT DESC;
    ```
 
-5. Once that succeeds, enable scheduled operation:
+6. Review results and errors before enabling automation:
+
+   ```sql
+   SELECT *
+   FROM <configured output table>
+   ORDER BY SCANNED_AT DESC;
+
+   SELECT *
+   FROM NULLAFI_CONNECTOR_ERROR_LOG
+   ORDER BY OCCURRED_AT DESC;
+   ```
+
+7. When the controlled run is correct, enable both tasks:
 
    ```sql
    ALTER TASK NULLAFI_CONNECTOR_PROCESS_TASK RESUME;
    ALTER TASK NULLAFI_CONNECTOR_MONITOR_TASK RESUME;
    ```
 
-The setup role needs `USAGE` on the connector database/schema and source and
-output locations; `CREATE NETWORK RULE`, `CREATE SECRET`, `CREATE PROCEDURE`,
-`CREATE TABLE`, `CREATE STREAM`, `CREATE TASK`, and (account-level) `CREATE
-INTEGRATION`. The task owner also needs `USAGE` on the chosen warehouse. Grant
-the connector owner `SELECT` on the source table and `CREATE`/DML privileges in
-the output schema. Snowflake's external-access feature and Python packages
-`requests` and `snowflake-snowpark-python` must be available.
+## Configuration reference
 
-### Configuration and troubleshooting
+Set these values in the parameter block before running the installer.
 
-- Identifiers are intentionally limited to unquoted one-, two-, or three-part
-  names. This makes the dynamic SQL safe and gives a clear error for quoted or
-  malformed mappings.
-- `SCAN_COLUMNS` must be a non-empty JSON array; its entries must exist on the
-  source table, be unique, and exclude the source key.
-- `MAX_FIELD_CHARACTERS` and `MAX_VALUES_PER_REQUEST` default to conservative,
-  configurable limits because Nullafi's production limits are not measured.
-- `STORE_RAW_RESPONSES` defaults to `FALSE`; leave it there unless temporary
-  diagnostics justify storing responses that might contain sensitive data.
-- A `401`/`403` is generally a missing or incorrectly scoped Nullafi API key;
-  an external-access error usually means the account lacks the required feature
-  or privilege; a preflight error identifies the bad table or column mapping.
+| Setting | Meaning | Production guidance |
+| --- | --- | --- |
+| `NULLAFI_SOURCE_TABLE` | One- to three-part source-table identifier. | Use a table with a stable, unique record key. |
+| `NULLAFI_SOURCE_KEY_COLUMN` | Source column that identifies a record. | It must be non-null and unique. |
+| `NULLAFI_SCAN_COLUMNS` | JSON array of source fields to send to Nullafi. | Include only fields approved for external scanning; exclude the source key. |
+| `NULLAFI_OUTPUT_TABLE` | Destination for per-field scan results. | Choose a protected schema and set retention/access controls. |
+| `NULLAFI_NAMESPACE` | Nullafi application namespace sent with `/scan`. | Verify it maps to the intended production rules. |
+| `NULLAFI_TASK_WAREHOUSE` | Warehouse used by both tasks. | Size it from representative load testing. |
+| `NULLAFI_TASK_SCHEDULE` | Snowflake task schedule. | Choose a cadence that matches latency and cost requirements. |
+| `NULLAFI_MAX_FIELD_CHARACTERS` | Maximum field length sent to Nullafi. | Replace the `1000` default only after endpoint-limit testing. |
+| `NULLAFI_MAX_VALUES_PER_REQUEST` | Maximum fields in one `/scan` request. | Replace the `20` default only after endpoint-limit testing. |
+| `NULLAFI_STORE_RAW_RESPONSES` | Whether API responses are retained. | Keep `FALSE` unless short-lived diagnostics are approved. |
 
-Known limitations: only unquoted identifiers and `INSERT_ONLY` change handling
-are currently supported. A source key must be stable and unique. Entity types
-are not written because they are absent from the confirmed `/scan` response.
-The installer creates/replaces connector-owned objects, so review the script
-before rerunning it in a populated connector schema.
+The validator rejects malformed identifiers, duplicate scan columns, a key also
+listed as a scan column, missing source/output columns, empty namespace,
+unsupported update policy, null keys, and duplicate source keys.
 
-### Roadmap
+## Operation and monitoring
 
-A Snowflake Native App is a potential future packaging option. It is explicitly
-out of scope for this release.
+### Expected behavior
 
-## Phase 5: Scheduled Automation
+- An inserted row is queued and scanned once.
+- An update is not rescanned (`INSERT_ONLY` is the only supported policy).
+- If a queued source row is deleted before processing, it is marked
+  `SKIPPED_SOURCE_DELETED` and is not sent to Nullafi.
+- Null inputs produce `SKIPPED_NULL` output rows without an API call.
+- A field exceeding `MAX_FIELD_CHARACTERS` is logged as a recoverable error and
+  is not sent.
+- API or response failures mark participating queue rows as `FAILED`; unaffected
+  batches continue.
 
-`snowflake/phase5_automation.sql` adds two user-managed-warehouse tasks:
-`NULLAFI_PHASE5_PROCESS_TASK` calls `NULLAFI_PROCESS_BATCH()` every five
-minutes, and `NULLAFI_PHASE5_MONITOR_TASK` records failed processing-task runs
-in `NULLAFI_PHASE5_TASK_FAILURE_LOG`. Recoverable API and row failures remain
-visible through `NULLAFI_PHASE5_PIPELINE_ALERTS`, which reads the existing run
-log.
-
-Before running the script, complete Phases 2–4 in the same schema and replace
-`<YOUR_WAREHOUSE>` with a warehouse the task-owner role can use. That role also
-needs `CREATE TASK` in the schema, `USAGE` on the warehouse, and the privileges
-already required to call the pipeline procedure. The script resumes both tasks;
-suspend them before maintenance:
+Inspect health regularly:
 
 ```sql
-ALTER TASK NULLAFI_PHASE5_PROCESS_TASK SUSPEND;
-ALTER TASK NULLAFI_PHASE5_MONITOR_TASK SUSPEND;
+SELECT *
+FROM NULLAFI_CONNECTOR_PIPELINE_ALERTS
+ORDER BY STARTED_AT DESC;
+
+SELECT *
+FROM NULLAFI_CONNECTOR_TASK_FAILURE_LOG
+ORDER BY RECORDED_AT DESC;
+
+SELECT QUEUE_STATUS, COUNT(*)
+FROM NULLAFI_CONNECTOR_WORK_QUEUE
+GROUP BY QUEUE_STATUS;
 ```
 
-To test or inspect automation without the Snowflake UI, use the `EXECUTE TASK`,
-`TASK_HISTORY`, run-log, and failure-log queries included at the end of the
-script. The task automatically suspends after three consecutive task-level
-failures; recoverable Nullafi failures do not fail the task, so monitor the
-pipeline-alert view as well.
-
-Live validation confirmed that the scheduled task processed one newly inserted
-synthetic row and that the next idle invocation processed zero rows. A safe
-invalid-argument test then produced a task failure that
-`NULLAFI_PHASE5_MONITOR_TASK` persisted to
-`NULLAFI_PHASE5_TASK_FAILURE_LOG`. The tasks were suspended after validation;
-resume both only when automated processing is wanted.
-
-## Phase 4: Incremental Processing with Streams
-
-`snowflake/phase3_batch_pipeline.sql` now creates
-`NULLAFI_PHASE4_INPUT_STREAM` and a durable, ID-only
-`NULLAFI_PHASE4_WORK_QUEUE`. Each invocation first consumes the stream through
-a `MERGE` into that queue, then sends only queued inserts to Nullafi. This is
-important because a stream read by `SELECT` alone does not advance its offset.
-The queue also prevents unprocessed work from being lost when an invocation is
-limited by `MAX_ROWS` or fails after the stream is consumed.
-
-The sample uses insert-triggered processing:
-
-- An insert is scanned once.
-- An update does not trigger a rescan; a new record ID is required to scan a
-  changed value in this POC.
-- A delete does not delete historical output. If a queued record disappears
-  before scanning, it is marked `SKIPPED_SOURCE_DELETED` and is not sent to
-  Nullafi.
-
-The SQL script includes a new-row test that inserts `cust_004`, followed by an
-idle-run test. The first call should select one row; the next should select
-zero. Run it after the initial Phase 3 validation in the same private
-worksheet.
-
-## Phase 3: Batch Pipeline
-
-`snowflake/phase3_batch_pipeline.sql` implements the first end-to-end,
-Snowflake-native pipeline: synthetic input rows are grouped into conservative
-multi-value `/scan` requests, then results are written to an output table.
-Failures are written to a dead-letter table, and run metrics go to a run-log
-table.
-
-Live validation passed with the synthetic dataset: the happy path processed all
-three records, a deliberately malformed endpoint produced recoverable
-dead-letter entries, and a normal rerun selected no already-processed rows.
-After configuring Nullafi's application/rule/obfuscation policy, the Phase 2
-SSN smoke test returned `changed: true`; Phase 3 therefore records protected
-SSNs as `SUCCESS` with `VALUE_CHANGED = TRUE`.
-
-The script is intentionally a sample implementation, with fixed
-`NULLAFI_PHASE3_*` object names and the five fields in Phase 1's synthetic
-dataset. For configuration-driven production setup, use the Phase 6 installer
-above instead. The sample requires the secret and external-access integration
-created by Phase 2.
-
-Run it from a private Snowflake worksheet after completing Phase 2:
+Run a bounded retry for failed work only after resolving its cause:
 
 ```sql
--- Run the complete snowflake/phase3_batch_pipeline.sql script first.
-CALL NULLAFI_PROCESS_BATCH();
-
-SELECT PROCESSING_STATUS, COUNT(*)
-FROM NULLAFI_PHASE3_SAMPLE_INPUT
-GROUP BY PROCESSING_STATUS;
+CALL NULLAFI_CONNECTOR_PROCESS('DEFAULT', 100, TRUE);
 ```
 
-The procedure processes `PENDING` rows by default. Its output writes use a
-`MERGE` keyed by source record and field, so the normal second run selects no
-already-processed records and cannot duplicate results. To retry only failed
-records, call `CALL NULLAFI_PROCESS_BATCH(100, TRUE);`.
-
-Because Nullafi's real batch and payload limits remain unmeasured, the current
-implementation limits each value to 1,000 characters and each outbound request
-to 20 field values. Oversized values and failed API batches go to
-`NULLAFI_PHASE3_ERROR_LOG`; they do not stop unrelated batches.
-
-## Phase 2: Snowflake Connectivity
-
-Phase 2 proves that a Python stored procedure can reach Nullafi through
-Snowflake external network access. The implementation lives in
-`snowflake/phase2_connectivity.sql` and the runbook lives in `SETUP.md`.
-
-Live validation succeeded after upgrading the Snowflake account: the procedure
-returned `ok: true`, HTTP `200`, and the expected JSON response. This proves
-Snowflake egress, secret retrieval, and Nullafi authentication. After the
-Nullafi policy was configured, the synthetic SSN test also returned
-`changed: true`, proving that obfuscation is applied.
-
-### What Phase 2 Added
-
-- A Snowflake `NETWORK RULE` scoped to `openflow.nullafi.net`.
-- A Snowflake `GENERIC_STRING` secret for the Nullafi API key.
-- An `EXTERNAL ACCESS INTEGRATION` binding the network rule and secret.
-- A minimal Python stored procedure, `NULLAFI_PHASE2_CONNECTIVITY_TEST`, that
-  calls Nullafi's `/scan` endpoint with one synthetic value.
-- Static tests that verify the setup SQL keeps only a placeholder API key in the
-  repository.
-- A successful live smoke test using only a synthetic SSN-like value.
-
-### Run In Snowflake
-
-Open `snowflake/phase2_connectivity.sql` in a private Snowflake worksheet,
-choose your role/warehouse/database/schema, replace the API-key placeholder in
-the worksheet only, and run the script.
-
-The smoke test is:
+Suspend processing before maintenance or incident response:
 
 ```sql
-CALL NULLAFI_PHASE2_CONNECTIVITY_TEST();
+ALTER TASK NULLAFI_CONNECTOR_PROCESS_TASK SUSPEND;
+ALTER TASK NULLAFI_CONNECTOR_MONITOR_TASK SUSPEND;
 ```
 
-Example success shape (any HTTP 2xx `status_code` is successful):
+The tasks suspend automatically after three consecutive task-level failures.
+Recoverable row/API errors do not fail a task; monitor the pipeline-alert view
+as well as task history.
 
-```json
-{
-  "ok": true,
-  "status_code": 200,
-  "changed": true
-}
-```
+## Data handling
 
-`changed: true` confirms that the configured policy returned an obfuscated
-value. A 2xx response remains the connectivity proof; `changed` is the policy
-application signal for this synthetic SSN test.
+The connector intentionally keeps its queue ID-only. It does not copy source
+plaintext into the queue. The output table stores the value returned by
+Nullafi; that value can be sensitive and may be unchanged when no configured
+policy modifies it. The error table does not store request values or headers;
+response bodies are stored only when
+`STORE_RAW_RESPONSES` is enabled. Apply your organization’s data classification,
+retention, RBAC, audit, and deletion rules to all connector-owned tables.
 
-See `SETUP.md` for privilege notes, troubleshooting, and the query-history check
-for secret exposure.
+The connector uses a Snowflake `GENERIC_STRING` secret bound to the processor
+at procedure-creation time. The secret value is not returned or logged by the
+implementation. Use a private worksheet or approved secret-injection workflow,
+then perform the query-history exposure check in [`SETUP.md`](SETUP.md).
 
-### Remaining Phase 2 Closeout
+## Local verification
 
-- Rotate the Nullafi API key used during live setup, replace the Snowflake
-  Secret with the new key, and run the query-history check in `SETUP.md`.
-- Optionally rerun the local Phase 1 POC in strict mode now that the Nullafi
-  SSN obfuscation policy is active.
-
-## Phase 1: Local POC
-
-Phase 1 proves the Nullafi API behavior locally before any Snowflake code is
-introduced. The POC reads synthetic records, sends non-null fields to Nullafi's
-scan endpoint, normalizes the response, and asserts that fields listed in
-`expected_sensitive_fields` are changed by the configured Nullafi rules.
-
-### What Phase 1 Added
-
-- Synthetic test data in `data/fake_sensitive_data.json`.
-- A small Nullafi HTTP client in `src/nullafi_client.py`.
-- A runnable local proof-of-concept script in `src/phase1_poc.py`.
-- Unit tests for local parsing, payload preparation, request construction, and
-  controlled API error handling.
-- A committed `.env.example` with dummy values only.
-- Local documentation for setup, test commands, and live API verification.
-
-### Setup
-
-Create and activate a virtual environment, then install dependencies:
+The local Python client and synthetic data are optional tools for API-contract
+testing; they do not install the connector. To run the repository test suite:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+venv/bin/python -m pytest -q
 ```
 
-Create a local `.env` file from the committed example:
+`SETUP.md` documents the standalone Snowflake connectivity diagnostic and its
+secret-exposure check. Use it only in an isolated schema when diagnosing network
+access or Nullafi authentication.
 
-```bash
-cp .env.example .env
-```
+## Known limitations
 
-Fill in these required values:
+- Only simple, unquoted one-, two-, or three-part identifiers are supported.
+- Processing is insert-only; updates do not trigger rescanning.
+- Automatic exponential retry/backoff, rate-limit coordination, and external
+  notification delivery are not implemented.
+- Entity types are not written because the confirmed `/scan` response contract
+  does not provide them.
+- The installer is designed for one `DEFAULT` configuration per connector
+  schema and creates/replaces connector-owned objects on rerun.
 
-```text
-NULLAFI_API_KEY=nul_your_real_key_here
-NULLAFI_NAMESPACE=dlp test
-NULLAFI_BASE_URL=https://openflow.nullafi.net/api
-```
+## Production readiness checklist
 
-Keep `NULLAFI_SCAN_PATH=/scan` unless your base URL already requires a different
-path. Do not commit `.env`; it is ignored by git.
+Do not treat a successful installation as production approval. Complete and
+record these items for the intended account and dataset.
 
-### Run
-
-```bash
-python src/phase1_poc.py
-```
-
-The script writes normalized output to `phase1_results.json`. That file is local
-debug output and is ignored by git.
-
-If you are still tuning the Nullafi dashboard rule and want the script to finish
-while reporting unchanged planted fields as warnings, run:
-
-```bash
-python src/phase1_poc.py --allow-unchanged-expected
-```
-
-You can also verify the API manually with curl:
-
-```bash
-set -a
-source .env
-set +a
-
-curl -X POST \
-  "https://openflow.nullafi.net/api/scan?namespace=dlp%20test" \
-  -H "Authorization: Bearer ${NULLAFI_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"ssn":"123-45-6789"}'
-```
-
-### Test
-
-```bash
-python -m pytest
-```
-
-The unit tests do not call Nullafi. They cover local parsing, null handling,
-request construction, and controlled API error handling.
-
-### Phase 1 Validation
-
-- Local unit tests pass with `python -m pytest`.
-- The live curl request reaches Nullafi successfully using:
-  - `NULLAFI_BASE_URL=https://openflow.nullafi.net/api`
-  - `NULLAFI_SCAN_PATH=/scan`
-  - `NULLAFI_NAMESPACE=dlp test`
-- The Nullafi dashboard shows the request and detects the SSN activity.
-- The dashboard policy now applies an SSN obfuscation rule to `dlp test`; the
-  Snowflake Phase 2 smoke test returned `changed: true` for the synthetic SSN.
-
-### Left For Later
-
-- Rerun `python src/phase1_poc.py` without `--allow-unchanged-expected` to
-  validate the local strict assertion path against the active policy.
-- Confirm and document the final obfuscated response shape if it differs from
-  the current normalized field-level representation.
-- Run broader rate-limit and max-payload tests after obfuscation is working.
-- Phase 2 starts Snowflake connectivity: Network Rule, Secret, External Access
-  Integration, and a minimal stored procedure that calls Nullafi.
+- [ ] Create a dedicated least-privilege production role; review grants for the
+  source, output, connector schema, warehouse, secret, and external access
+  integration.
+- [ ] Create a new least-privilege Nullafi API key, rotate the validation key,
+  and place the new key only in the Snowflake Secret through a private or
+  approved secret-management workflow.
+- [ ] Search Snowflake query history for a safe short fragment of the key as
+  documented in `SETUP.md`; if it appears, revoke/rotate the key and document
+  the exposure response.
+- [ ] Confirm `STORE_RAW_RESPONSES = FALSE`, restrict reader access to output
+  and error tables, and approve retention/deletion/backup requirements for
+  every connector-owned table.
+- [ ] Validate the production Nullafi namespace, policy, rule coverage, and
+  expected obfuscation results using synthetic test values.
+- [ ] Measure the maximum field characters, total request payload, and number
+  of values/arguments supported by Nullafi `/scan`. Test boundaries, malformed
+  responses, timeouts, 4xx/5xx, rate limits, and partial failures; then set
+  `MAX_FIELD_CHARACTERS` and `MAX_VALUES_PER_REQUEST` with safety headroom.
+- [ ] Verify the actual source key is immutable, non-null, and unique; verify
+  all scan columns and the insert-only update/delete behavior meet requirements.
+- [ ] Load test representative volumes and field sizes. Set warehouse size,
+  schedule, `MAX_ROWS`, concurrency expectations, and cost alerts from results.
+- [ ] Test recovery from an API outage, failed batch, task auto-suspension,
+  manual retry, queued-source deletion, secret rotation, and task resumption.
+- [ ] Connect pipeline and task-failure tables to an owned monitoring/alerting
+  service with severity, escalation, and response-time expectations.
+- [ ] Write and exercise a runbook for daily health checks, incident response,
+  policy/schema changes, secret rotation, rollback, and business continuity.
+- [ ] Re-run the automated tests and a clean-environment installation for the
+  release candidate; retain the validation evidence and publish versioned
+  release notes with compatibility and rollback guidance.
+- [ ] Obtain security, privacy, data-governance, and service-owner approval for
+  sending the selected fields to Nullafi.
+- [ ] Convert to a Snowflake Native App.

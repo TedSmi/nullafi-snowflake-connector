@@ -2,8 +2,8 @@
 --
 -- Run this file in a NEW, otherwise empty schema. It does not create or alter
 -- the source table. It creates only objects whose names start NULLAFI_CONNECTOR.
--- Do not run the Phase 2-5 sample scripts in the same schema: they are a POC
--- with deliberately different, fixed object names.
+-- Do not run the legacy sample scripts in the same schema: they use deliberately
+-- different, fixed object names.
 --
 -- Before executing, replace only the values in this parameter block. The API
 -- key placeholder must be replaced in a private worksheet and never committed.
@@ -24,9 +24,9 @@ SET NULLAFI_SCAN_COLUMNS = '["EMAIL", "SSN", "NOTES"]';
 SET NULLAFI_OUTPUT_TABLE = 'APP_DB.PROTECTED.NULLAFI_SCAN_OUTPUT';
 SET NULLAFI_NAMESPACE = 'your Nullafi namespace';
 SET NULLAFI_TASK_WAREHOUSE = 'YOUR_TASK_WAREHOUSE';
-SET NULLAFI_TASK_SCHEDULE = '5 MINUTES';
+SET NULLAFI_TASK_SCHEDULE = '3 MINUTES';
 
--- Keep this conservative default unless Nullafi has supplied measured limits.
+-- Nullafi max field characters and max values per request not yet validated
 SET NULLAFI_MAX_FIELD_CHARACTERS = 1000;
 SET NULLAFI_MAX_VALUES_PER_REQUEST = 20;
 -- Raw responses can contain protected or plaintext data. Leave FALSE for the
@@ -54,9 +54,8 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION NULLAFI_CONNECTOR_EXTERNAL_ACCESS
   ENABLED = TRUE
   COMMENT = 'Permits this connector to call Nullafi using its bound secret.';
 
--- One config row is sufficient for an installed connector. A CONFIG_NAME key
--- leaves room for multiple independently configured procedures in a future
--- release without making a task ambiguous today.
+-- This installer runs the task against one DEFAULT configuration. CONFIG_NAME
+-- keeps result and operational records unambiguous.
 CREATE OR REPLACE TABLE NULLAFI_CONNECTOR_CONFIG (
   CONFIG_NAME STRING NOT NULL,
   SOURCE_TABLE STRING NOT NULL,
@@ -236,8 +235,8 @@ def run(session, config_name):
         raise ValueError("MAX_FIELD_CHARACTERS must be between 1 and 100000")
     if not 1 <= int(config["MAX_VALUES_PER_REQUEST"]) <= 1000:
         raise ValueError("MAX_VALUES_PER_REQUEST must be between 1 and 1000")
-    # DESC is both an existence check and a schema check. Use the normalized
-    # returned names because Snowflake reports unquoted identifiers in uppercase.
+    # DESC is both an existence check and a schema check. Use normalized names
+    # because Snowflake reports unquoted identifiers in uppercase.
     source_columns = {row["name"].upper() for row in session.sql(f"DESC TABLE {source_table}").collect()}
     requested = {name.replace('"', '') for name in [key_column] + normalized_columns}
     missing = sorted(requested - source_columns)
